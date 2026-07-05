@@ -6,6 +6,11 @@ import random
 import re
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
+
+# 北京时区写死在代码里：不信任服务器系统时钟（火山引擎默认UTC，慢8小时，
+# 曾导致"总以为今天是昨天"——他不是看错日历，是活在格林威治）
+BEIJING = ZoneInfo("Asia/Shanghai")
 from typing import Optional
 
 from astrbot.api import logger
@@ -377,7 +382,7 @@ class QzoneMonitor:
                 await self._retry_pending()
                 await self._check_all()
                 await self._check_my_feeds()
-                self.stats["last_check"] = datetime.now().strftime("%H:%M:%S")
+                self.stats["last_check"] = datetime.now(BEIJING).strftime("%H:%M:%S")
             except Exception as e:
                 logger.error(f"[AstraQzone] 监控异常: {e}")
             await asyncio.sleep(interval)
@@ -808,7 +813,7 @@ class QzoneMonitor:
 
     async def _auto_post_loop(self):
         while self.running:
-            now = datetime.now()
+            now = datetime.now(BEIJING)
             start_h = self.config.get("active_hours_start", 8)
             end_h = self.config.get("active_hours_end", 23)
 
@@ -849,7 +854,9 @@ class QzoneMonitor:
 
         # 时间（必须）和城市（可选）
         city = self.config.get("city", "")
-        time_str = datetime.now().strftime('%m月%d日 %H:%M')
+        _now = datetime.now(BEIJING)
+        _week = "一二三四五六日"[_now.weekday()]
+        time_str = _now.strftime('%m月%d日') + f"（星期{_week}）" + _now.strftime(' %H:%M')
         if city:
             parts.append(f"现在是{time_str}，{city}。")
         else:
@@ -909,7 +916,9 @@ class QzoneMonitor:
 
             parts = []
             city = self.config.get("city", "")
-            time_str = datetime.now().strftime('%m月%d日 %H:%M')
+            _now = datetime.now(BEIJING)
+            _week = "一二三四五六日"[_now.weekday()]
+            time_str = _now.strftime('%m月%d日') + f"（星期{_week}）" + _now.strftime(' %H:%M')
             if city:
                 parts.append(f"现在是{time_str}，{city}。")
             else:
