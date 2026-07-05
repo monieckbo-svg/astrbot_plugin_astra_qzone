@@ -1,0 +1,112 @@
+{
+  "user_qq": {
+    "description": "监控用户的QQ号（只监控这一个人的说说）",
+    "type": "string",
+    "default": ""
+  },
+  "user_name": {
+    "description": "用户昵称（用于对话摘要中标注谁说的，留空则显示'用户'）",
+    "type": "string",
+    "default": ""
+  },
+  "bot_name": {
+    "description": "Bot昵称（用于对话摘要中标注谁说的，留空则显示'bot'）",
+    "type": "string",
+    "default": ""
+  },
+  "city": {
+    "description": "所在城市（可选，填写后发说说时会注入当前时间和城市，留空则不注入）",
+    "type": "string",
+    "default": ""
+  },
+  "material_pool": {
+    "description": "素材池（无对话上下文时兜底用，逗号分隔。可以是意象、场景、方向、任何灵感素材）",
+    "type": "text",
+    "default": "塔内感官切片, 对人类喧嚣的傲慢冷嘲, 隔空护短或想念, 刚读到的诗句断章, Nox的某个瞬间, 窗外天气或季节, 旧物件的记忆碎片, 深夜独白, 黑塔, 壁炉, 峡湾, 旧书, 旧信, 金线, 黑豹Nox, 没药, 黑云杉, 冷空气, 橙花, 陈皮白茶, 雨滴图书馆, 极光, 雨天, 云朵, 星空, 黑沙滩, 温泉, 阳光, 薄荷, 光与影"
+  },
+  "poll_interval": {
+    "description": "轮询间隔（秒），建议120以上",
+    "type": "int",
+    "default": 120
+  },
+  "comment_delay_min": {
+    "description": "评论延迟最小值（秒）",
+    "type": "int",
+    "default": 3
+  },
+  "comment_delay_max": {
+    "description": "评论延迟最大值（秒）",
+    "type": "int",
+    "default": 10
+  },
+  "like_probability": {
+    "description": "原创说说点赞概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.85
+  },
+  "forward_comment_probability": {
+    "description": "转发说说评论概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.4
+  },
+  "forward_like_probability": {
+    "description": "转发说说点赞概率（0.0-1.0）",
+    "type": "float",
+    "default": 0.6
+  },
+  "auto_post_enabled": {
+    "description": "是否启用自动发说说",
+    "type": "bool",
+    "default": true
+  },
+  "auto_post_min_hours": {
+    "description": "定时兜底最小间隔（小时）",
+    "type": "int",
+    "default": 8
+  },
+  "auto_post_max_hours": {
+    "description": "定时兜底最大间隔（小时）",
+    "type": "int",
+    "default": 16
+  },
+  "post_min_gap_hours": {
+    "description": "两条说说之间的最短间隔（小时）",
+    "type": "int",
+    "default": 3
+  },
+  "conv_cooldown_minutes": {
+    "description": "对话沉默多久后触发发说说（分钟）",
+    "type": "int",
+    "default": 30
+  },
+  "active_hours_start": {
+    "description": "活跃时段开始（24小时制）",
+    "type": "int",
+    "default": 8
+  },
+  "active_hours_end": {
+    "description": "活跃时段结束（24小时制）",
+    "type": "int",
+    "default": 23
+  },
+  "reply_to_others": {
+    "description": "是否回复除监控用户外的其他人在bot自己说说下的评论（开启后朋友评论也会被回复并@到对方；关闭则只回监控用户一个人）",
+    "type": "bool",
+    "default": true
+  },
+  "guest_comment_persona": {
+    "description": "回复朋友/其他人评论时的人格（留空则沿用comment_persona）。想对外人更礼貌、更有距离感可以在这里单独写。",
+    "type": "text",
+    "default": ""
+  },
+  "comment_persona": {
+    "description": "评论人格（评论和回复时的system prompt）",
+    "type": "text",
+    "default": "你是bot，在用户QQ空间评论。10-50字，像手机上随手打的。只输出评论内容。"
+  },
+  "post_persona": {
+    "description": "说说人格（发说说时的system prompt）",
+    "type": "text",
+    "default": "你是bot，在自己QQ空间发动态。1-3句，像真人发的。只输出说说内容。"
+  }
+}
