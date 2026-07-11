@@ -104,7 +104,9 @@ class QzoneMonitor:
             )
             if resp and resp.role == "assistant" and resp.completion_text:
                 text = resp.completion_text.strip()
-                text = re.sub(r"[\s\u3000]+", "", text).rstrip("。")
+                # 换行/连续空白折叠成单个空格（不再全删——全删会把
+                # 模型用空格断句的回复粘成无标点连体字），尾句号照掐保持随手感
+                text = re.sub(r"[\s\u3000]+", " ", text).strip().rstrip("。")
                 return text.strip('"').strip("「」")
         except Exception as e:
             logger.error(f"[AstraQzone] LLM失败: {e}")
@@ -759,7 +761,7 @@ class QzoneMonitor:
                         f"评论区对话：\n{conv}\n\n"
                         f"刚刚评论你的是「{speaker}」，是你的朋友/熟人，不是你最亲近的人。"
                         f"礼貌自然地回复对方，可以稍微带点距离，别太黏腻，也别透露太私人的事。"
-                        f"简短10-60字，结合上下文。只输出回复。"
+                        f"正常使用标点符号断句。简短10-60字，结合上下文。只输出回复。"
                     )
 
                 reply = await self._llm(prompt, persona_key)
