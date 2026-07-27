@@ -276,7 +276,7 @@ class QzoneMonitor:
             return
         cid = str(item.get("commentid") or item.get("tid")
                   or item.get("comment_id") or item.get("id") or "")
-        key = cid if cid else f"{uin}:{content}"
+        key = f"{cid}:{uin}:{content}"  # cid可能恒为1(楼中楼),必须叠加人和内容才唯一,否则同人多条追评被误判重复
         # 启动时看到的评论一律写入防重总账：只回启动之后新来的评论
         rk = self._state.setdefault("replied_keys", [])
         if f"{tid}:{key}" not in rk:
@@ -694,7 +694,7 @@ class QzoneMonitor:
                     return
                 cid = str(item.get("commentid") or item.get("tid")
                           or item.get("comment_id") or item.get("id") or "")
-                key = cid if cid else f"{uin}:{content}"
+                key = f"{cid}:{uin}:{content}"  # cid可能恒为1(楼中楼),必须叠加人和内容才唯一,否则同人多条追评被误判重复
                 # 防重总账：只要处理过一次就永远跳过，不受 my_threads 清理影响
                 if f"{tid}:{key}" in self._state.get("replied_keys", []):
                     return
