@@ -795,13 +795,16 @@ class QzoneMonitor:
                     continue
 
                 # 优先用"回复评论"@到对方（朋友才能收到通知），拿不到评论id就退回普通评论
+                logger.info(f"[AstraQzone][调试] 楼层定位: reply_cid={it['cid']!r} target_uin={it['uin']!r}")
                 ok = False
                 if it["cid"] and it["uin"]:
                     ok = await self.api.reply_comment(
                         self.astra_qq, tid, it["cid"], it["uin"], reply
                     )
+                    logger.info(f"[AstraQzone][调试] reply_comment 返回={ok}")
                 if not ok:
                     ok = await self.api.post_comment(self.astra_qq, tid, reply)
+                    logger.info(f"[AstraQzone][调试] fallback post_comment 返回={ok}")
 
                 if ok:
                     self.stats["replies"] += 1
