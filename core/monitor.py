@@ -541,12 +541,18 @@ class QzoneMonitor:
         new = []
         cid_map = {}  # content -> (cid, uin)，用来@回复她
 
-        def _index_cid(item):
+        def _index_cid(item, parent=None):
             u = str(item.get("uin", ""))
             ctt = (item.get("content") or "").strip()
             if u == self.user_qq and ctt and ctt not in cid_map:
                 cid = str(item.get("commentid") or item.get("tid")
                           or item.get("comment_id") or item.get("id") or "")
+                # 楼中楼子回复cid恒为1无法定位楼层——用所在主楼评论的真实cid回复并@她
+                if parent is not None:
+                    pcid = str(parent.get("commentid") or parent.get("comment_id")
+                               or parent.get("id") or "")
+                    if pcid:
+                        cid = pcid
                 cid_map[ctt] = (cid, u)
                 logger.info(f"[AstraQzone][调试] 收到她的评论 keys={list(item.keys())} 取到cid={cid!r}")
 
@@ -561,7 +567,7 @@ class QzoneMonitor:
                 sub_uin = str(sub.get("uin", ""))
                 if sub_uin == self.user_qq and parent_uin == self.astra_qq:
                     self._scan(sub, known, new)
-                    _index_cid(sub)
+                    _index_cid(sub, c)
 
         for reply_text in new:
             clean_text = self._clean_at_tags(reply_text)
@@ -683,7 +689,7 @@ class QzoneMonitor:
 
             new_items: list[dict] = []
 
-            def collect(item: dict):
+            def collect(item: dict, parent: dict = None):
                 uin = str(item.get("uin", ""))
                 content = (item.get("content") or "").strip()
                 # 跳过：空内容、我自己发的
@@ -695,20 +701,28 @@ class QzoneMonitor:
                 cid = str(item.get("commentid") or item.get("tid")
                           or item.get("comment_id") or item.get("id") or "")
                 key = f"{cid}:{uin}:{content}"  # cid可能恒为1(楼中楼),必须叠加人和内容才唯一,否则同人多条追评被误判重复
+                # 楼中楼子回复的cid恒为1无法定位楼层——回复时改用所在主楼评论的真实cid，
+                # 接口会把回复挂进正确的楼并@到对方；否则会fallback成主楼新评论或挂错楼。
+                reply_cid = cid
+                if parent is not None:
+                    pcid = str(parent.get("commentid") or parent.get("comment_id")
+                               or parent.get("id") or "")
+                    if pcid:
+                        reply_cid = pcid
                 # 防重总账：只要处理过一次就永远跳过，不受 my_threads 清理影响
                 if f"{tid}:{key}" in self._state.get("replied_keys", []):
                     return
                 if key in known or any(x["key"] == key for x in new_items):
                     return
                 new_items.append({
-                    "key": key, "uin": uin, "cid": cid, "content": content,
+                    "key": key, "uin": uin, "cid": reply_cid, "content": content,
                     "name": (item.get("name") or "").strip(),
                 })
 
             for c in comments:
                 collect(c)
                 for sub in (c.get("list_3") or c.get("replies") or []):
-                    collect(sub)
+                    collect(sub, c)
 
             for it in new_items:
                 # 保险丝：同一条说说下对同一个人的回复超过上限，强制停手。
