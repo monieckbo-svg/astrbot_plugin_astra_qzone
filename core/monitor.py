@@ -340,7 +340,8 @@ class QzoneMonitor:
                 target_uin = item.get("target_uin")
                 if cid and target_uin:
                     ok = await self.api.reply_comment(
-                        item.get("owner_qq", self.user_qq), tid, cid, target_uin, reply
+                        item.get("owner_qq", self.user_qq), tid, cid, target_uin, reply,
+                        nick=self.config.get("user_name") or ""
                     )
                 if not ok:
                     ok = await self.api.post_comment(item.get("owner_qq", self.user_qq), tid, reply)
@@ -357,7 +358,8 @@ class QzoneMonitor:
                 target_uin = item.get("target_uin")
                 if cid and target_uin:
                     ok = await self.api.reply_comment(
-                        item.get("owner_qq", self.astra_qq), tid, cid, target_uin, reply
+                        item.get("owner_qq", self.astra_qq), tid, cid, target_uin, reply,
+                        nick=item.get("speaker") or ""
                     )
                 if not ok:
                     ok = await self.api.post_comment(item.get("owner_qq", self.astra_qq), tid, reply)
@@ -608,7 +610,8 @@ class QzoneMonitor:
             logger.info(f"[AstraQzone][调试] 准备回复 tid={tid} cid={cid!r} target_uin={target_uin!r}")
             ok = False
             if cid and target_uin:
-                ok = await self.api.reply_comment(self.user_qq, tid, cid, target_uin, reply)
+                ok = await self.api.reply_comment(self.user_qq, tid, cid, target_uin, reply,
+                                                  nick=self.config.get("user_name") or "")
                 logger.info(f"[AstraQzone][调试] reply_comment(@回复) 返回={ok}")
             if not ok:
                 ok = await self.api.post_comment(self.user_qq, tid, reply)
@@ -799,7 +802,7 @@ class QzoneMonitor:
                 ok = False
                 if it["cid"] and it["uin"]:
                     ok = await self.api.reply_comment(
-                        self.astra_qq, tid, it["cid"], it["uin"], reply
+                        self.astra_qq, tid, it["cid"], it["uin"], reply, nick=it["name"]
                     )
                     logger.info(f"[AstraQzone][调试] reply_comment 返回={ok}")
                 if not ok:

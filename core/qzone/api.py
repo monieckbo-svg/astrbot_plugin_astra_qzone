@@ -134,23 +134,51 @@ class QzoneAPI:
     # ─── 回复评论 ───
 
     async def reply_comment(self, target_qq: str, tid: str, comment_id: str,
-                            comment_uin: str, content: str) -> bool:
+                            comment_uin: str, content: str, nick: str = "") -> bool:
+        """回复评论并@到对方。
+        关键点（参照QQ空间实际抓包/开源实现）：
+        1. content 必须以 @{uin:x,nick:x,auto:1} 提及结构开头，客户端才渲染为"回复@某人"
+        2. 楼层归属由 commentId 决定（传所在主楼评论的真实id）
+        3. h5 路径还需 t1_uin/t1_tid(说说主人/说说id) + t2_uin/t2_tid(被回复人/评论id)
+        """
         ctx = await self.session.get_ctx()
         http = await self._get_http()
-        data = {
-            "topicId": f"{target_qq}_{tid}__1",
-            "uin": ctx.uin, "hostUin": target_qq,
-            "feedsType": 100, "inCharset": "utf-8", "outCharset": "utf-8",
-            "plat": "qzone", "source": "ic", "platformid": 52,
-            "format": "fs", "ref": "feeds", "content": content,
-            "commentId": comment_id, "commentUin": comment_uin,
-            "richval": "", "richtype": "", "private": "0", "paramstr": "2",
-            "qzreferrer": f"https://user.qzone.qq.com/{ctx.uin}/main",
-        }
+        nick = nick or comment_uin
+        if not content.startswith("@{"):
+            content = f"@{{uin:{comment_uin},nick:{nick},auto:1}} {content}"
+        qzref = f"https://user.qzone.qq.com/{ctx.uin}/main"
         headers = {
             "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
             "Referer": "https://user.qzone.qq.com/",
             "Origin": "https://user.qzone.qq.com",
+        }
+        # ① PC 路径：topicId 不带 __1，format=json
+        pc_data = {
+            "hostUin": target_qq, "topicId": f"{target_qq}_{tid}",
+            "content": content, "format": "json", "qzreferrer": qzref,
+            "commentId": comment_id, "replyUin": comment_uin, "commentUin": comment_uin,
+        }
+        try:
+            async with http.post(self.COMMENT_URL, data=pc_data,
+                                 params={"g_tk": ctx.gtk}, headers=headers) as r:
+                text = await r.text()
+            if '"code":0' in text or '"ret":0' in text:
+                return True
+            logger.info(f"[AstraQzone][调试] PC路径回复未成功，落h5。返回片段={text[:120]!r}")
+        except Exception as e:
+            logger.warning(f"[AstraQzone] PC路径回复异常，落h5: {e}")
+        # ② h5 路径：topicId 带 __1，format=fs，补 t1/t2 定位参数
+        data = {
+            "topicId": f"{target_qq}_{tid}__1",
+            "uin": ctx.uin, "hostUin": target_qq,
+            "feedsType": 100, "inCharset": "utf-8", "outCharset": "utf-8",
+            "plat": "qzone", "source": "ic", "platformid": 50, "isSignIn": "",
+            "format": "fs", "ref": "feeds", "content": content,
+            "commentId": comment_id, "commentUin": comment_uin,
+            "t1_uin": target_qq, "t1_tid": tid,
+            "t2_uin": comment_uin, "t2_tid": comment_id,
+            "richval": "", "richtype": "", "private": "0", "paramstr": "2",
+            "qzreferrer": qzref,
         }
         try:
             async with http.post(self.REPLY_URL, data=data,
