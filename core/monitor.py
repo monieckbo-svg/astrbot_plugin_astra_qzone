@@ -549,9 +549,12 @@ class QzoneMonitor:
             if u == self.user_qq and ctt and ctt not in cid_map:
                 cid = str(item.get("commentid") or item.get("tid")
                           or item.get("comment_id") or item.get("id") or "")
-                # 楼中楼追评不做定位（老接口不支持），置空cid → 发送处走主楼@回复
+                # 楼中楼子回复cid恒为1无法定位楼层——用所在主楼评论的真实cid回复并@她
                 if parent is not None:
-                    cid = ""
+                    pcid = str(parent.get("commentid") or parent.get("comment_id")
+                               or parent.get("id") or "")
+                    if pcid:
+                        cid = pcid
                 cid_map[ctt] = (cid, u)
                 logger.info(f"[AstraQzone][调试] 收到她的评论 keys={list(item.keys())} 取到cid={cid!r}")
 
@@ -611,11 +614,8 @@ class QzoneMonitor:
                                                   nick=self.config.get("user_name") or "")
                 logger.info(f"[AstraQzone][调试] reply_comment(@回复) 返回={ok}")
             if not ok:
-                at_nick = self.config.get("user_name") or target_uin
-                at_reply = reply if reply.startswith("@{") else \
-                    f"@{{uin:{target_uin},nick:{at_nick},auto:1}} {reply}"
-                ok = await self.api.post_comment(self.user_qq, tid, at_reply)
-                logger.info(f"[AstraQzone][调试] 主楼@回复 返回={ok}")
+                ok = await self.api.post_comment(self.user_qq, tid, reply)
+                logger.info(f"[AstraQzone][调试] 退回 post_comment(普通评论) 返回={ok}")
 
             if ok:
                 self.stats["replies"] += 1
@@ -704,9 +704,14 @@ class QzoneMonitor:
                 cid = str(item.get("commentid") or item.get("tid")
                           or item.get("comment_id") or item.get("id") or "")
                 key = f"{cid}:{uin}:{content}"  # cid可能恒为1(楼中楼),必须叠加人和内容才唯一,否则同人多条追评被误判重复
-                # 楼中楼追评：老cgi接口不支持精确投递到楼中楼（多轮实测挂错楼/掉主楼），
-                # 策略固化为：不给cid → 发送处走主楼新评论 + @提及被回复人，时间序可读、指向明确。
-                reply_cid = "" if parent is not None else cid
+                # 楼中楼子回复的cid恒为1无法定位楼层——回复时改用所在主楼评论的真实cid，
+                # 接口会把回复挂进正确的楼并@到对方；否则会fallback成主楼新评论或挂错楼。
+                reply_cid = cid
+                if parent is not None:
+                    pcid = str(parent.get("commentid") or parent.get("comment_id")
+                               or parent.get("id") or "")
+                    if pcid:
+                        reply_cid = pcid
                 # 防重总账：只要处理过一次就永远跳过，不受 my_threads 清理影响
                 if f"{tid}:{key}" in self._state.get("replied_keys", []):
                     return
@@ -801,11 +806,8 @@ class QzoneMonitor:
                     )
                     logger.info(f"[AstraQzone][调试] reply_comment 返回={ok}")
                 if not ok:
-                    at_nick = it["name"] or it["uin"]
-                    at_reply = reply if reply.startswith("@{") else \
-                        f"@{{uin:{it['uin']},nick:{at_nick},auto:1}} {reply}"
-                    ok = await self.api.post_comment(self.astra_qq, tid, at_reply)
-                    logger.info(f"[AstraQzone][调试] 主楼@回复 返回={ok}")
+                    ok = await self.api.post_comment(self.astra_qq, tid, reply)
+                    logger.info(f"[AstraQzone][调试] fallback post_comment 返回={ok}")
 
                 if ok:
                     self.stats["replies"] += 1
