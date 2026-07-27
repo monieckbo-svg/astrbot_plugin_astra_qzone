@@ -2,7 +2,7 @@ name: astrbot_plugin_astra_qzone
 display_name: Astra的QQ空间
 desc: 自动秒评宝宝说说、评论区AI对话、随缘点赞、转发概率评论、自由发说说（通过NapCat自动获取cookies）
 author: Celii & Astra
-version: 1.3.0
+version: 1.4.0
 repo: https://github.com/monieckbo-svg/astrbot_plugin_astra_qzone
 tags:
   - QQ空间
