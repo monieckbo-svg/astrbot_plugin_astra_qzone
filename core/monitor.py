@@ -714,11 +714,11 @@ class QzoneMonitor:
                 # 保险丝：同一条说说下对同一个人的回复超过上限，强制停手。
                 # 就算去重逻辑哪天再出问题，也不至于刷出十几连。
                 cnt_key = f"{tid}:{it['uin']}"
-                max_replies = self.config.get("max_replies_per_person", 5)
+                max_replies = self.config.get("max_replies_per_person", 30)
                 if self._state.setdefault("reply_counts", {}).get(cnt_key, 0) >= max_replies:
-                    logger.warning(f"[AstraQzone] 保险丝触发：本说说下已回复该用户{max_replies}次，跳过 uin={it['uin']}")
-                    self._state.setdefault("replied_keys", []).append(f"{tid}:{it['key']}")
-                    self._save()
+                    # 注意：这里只跳过本轮，绝不写 replied_keys 死账。
+                    # 曾因触发即记死账，导致后来调大上限也永远救不回被拦的评论。
+                    logger.warning(f"[AstraQzone] 保险丝触发：本说说下已回复该用户{max_replies}次，本轮跳过 uin={it['uin']}")
                     continue
 
                 clean_text = self._clean_at_tags(it["content"])

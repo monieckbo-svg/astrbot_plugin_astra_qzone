@@ -89,6 +89,11 @@
     "type": "int",
     "default": 23
   },
+  "max_replies_per_person": {
+    "description": "保险丝：同一条说说下对同一个人的最大回复数，超过后跳过（防去重失效时无限刷屏）",
+    "type": "int",
+    "default": 30
+  },
   "reply_to_others": {
     "description": "是否回复除监控用户外的其他人在bot自己说说下的评论（开启后朋友评论也会被回复并@到对方；关闭则只回监控用户一个人）",
     "type": "bool",
