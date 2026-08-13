@@ -905,6 +905,7 @@ class QzoneMonitor:
         parts.append(
             "\n有想说的话吗？"
             "有就直接写说说内容（1-3句）。"
+            "直接写正文本身，绝对不要带昵称、日期、时间戳之类的前缀（那是聊天记录的排版，不是说说的）。"
             "没感觉就只回复「算了」。"
         )
 
@@ -918,6 +919,13 @@ class QzoneMonitor:
         if self._should_skip(content):
             logger.info(f"[AstraQzone] 这轮不发（回复: {content}）")
             return
+
+        cleaned = re.sub(
+            r'^\s*[\[【]?[^\n:：]{0,24}?[\]】]?\s*\d{1,2}:\d{2}:\d{2}[\]】]?\s*[:：]?\s*',
+            '', content, count=1).strip()
+        if cleaned and cleaned != content.strip():
+            logger.info(f"[AstraQzone] 剥掉聊天记录式前缀: {content[:30]!r} -> {cleaned[:30]!r}")
+            content = cleaned
 
         tid = await self.api.publish(content)
         if tid:
