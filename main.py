@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.5",
+    "1.5.6",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -37,9 +37,10 @@ class AstraQzonePlugin(Star):
         self.monitor: QzoneMonitor | None = None
         self._task: asyncio.Task | None = None
         self._booted = False
-        # 各会话最近出现的图片：key=会话唯一标识, value=[(时间戳, 图片URL), ...]
+        # 各会话最近出现的图片：key=会话唯一标识,
+        # value=[(时间戳, "bytes"|"url", 字节或链接), ...]；本地图入桶即读成字节固化，防 temp 被清
         # 私聊/群聊/不同平台天然分桶隔离
-        self._img_buffer: dict[str, list[tuple[float, str]]] = {}
+        self._img_buffer: dict[str, list] = {}
         self._IMG_TTL = 600   # 图片有效期(秒)，超时视作过期
         self._IMG_KEEP = 8    # 每个会话最多留几张
 
@@ -112,15 +113,9 @@ class AstraQzonePlugin(Star):
         urls = self._extract_image_urls(event)
         if not urls:
             return
-        key = event.unified_msg_origin
-        now = time.time()
-        buf = self._img_buffer.setdefault(key, [])
-        for u in urls:
-            buf.append((now, u))
-        # 滚动裁剪：只留时间窗内的最近几张
-        cutoff = now - self._IMG_TTL
-        self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
-        logger.info(f"[AstraQzone] 缓存图片{len(urls)}张 会话尾={key[-12:]}")
+        n = self._ingest_srcs(event.unified_msg_origin, urls)
+        if n:
+            logger.info(f"[AstraQzone] 缓存图片{n}张 会话尾={event.unified_msg_origin[-12:]}")
 
     @filter.on_decorating_result()
     async def _capture_sent_images(self, event: AstrMessageEvent):
@@ -132,26 +127,44 @@ class AstraQzonePlugin(Star):
         srcs = self._extract_from_comps(result.chain)
         if not srcs:
             return
-        key = event.unified_msg_origin
+        n = self._ingest_srcs(event.unified_msg_origin, srcs)
+        if n:
+            logger.info(f"[AstraQzone] 缓存发出图{n}张 会话尾={event.unified_msg_origin[-12:]}")
+
+    def _ingest_srcs(self, key: str, srcs) -> int:
+        """把图片来源存进会话桶。本地文件当场读成字节固化（temp 随后可能被清理），
+        远程链接存链接。返回本次存入的张数。"""
         now = time.time()
         buf = self._img_buffer.setdefault(key, [])
-        for u in srcs:
-            buf.append((now, u))
+        added = 0
+        for s in srcs:
+            if s.startswith("http"):
+                buf.append((now, "url", s))
+                added += 1
+            else:
+                p = s[7:] if s.startswith("file://") else s
+                try:
+                    if os.path.exists(p):
+                        with open(p, "rb") as f:
+                            buf.append((now, "bytes", f.read()))
+                        added += 1
+                except Exception as e:
+                    logger.info(f"[AstraQzone] 读本地图入桶失败: {e}")
         cutoff = now - self._IMG_TTL
-        self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
-        logger.info(f"[AstraQzone] 缓存发出图{len(srcs)}张 会话尾={key[-12:]}")
+        self._img_buffer[key] = [x for x in buf if x[0] >= cutoff][-self._IMG_KEEP:]
+        return added
 
-    def _recent_image(self, key: str) -> str | None:
-        """取某会话缓存里最近一张仍可用的图片：过期的跳过，本地文件已被清理的也跳过。"""
+    async def _recent_image_bytes(self, key: str) -> bytes | None:
+        """取会话桶里最近一张可用图的字节：已固化的直接给，链接的现下。"""
         now = time.time()
-        for t, u in reversed(self._img_buffer.get(key) or []):
-            if now - t > self._IMG_TTL:
+        for ts, kind, payload in reversed(self._img_buffer.get(key) or []):
+            if now - ts > self._IMG_TTL:
                 continue
-            if not u.startswith("http"):
-                p = u[7:] if u.startswith("file://") else u
-                if not os.path.exists(p):
-                    continue
-            return u
+            if kind == "bytes":
+                return payload
+            b = await self._load_image_bytes(payload)
+            if b:
+                return b
         return None
 
     async def _load_image_bytes(self, src: str) -> bytes | None:
@@ -244,21 +257,27 @@ class AstraQzonePlugin(Star):
         images = None
         if str(attach_image).lower() in ("true", "1", "yes"):
             key = event.unified_msg_origin
-            # ①触发消息自带的图 → ②会话缓存桶 → ③兜底：gpt_image 刚画的图
+            data = None
+            via = ""
+            # ①触发消息自带的图（刚落地，当场读）
             urls = self._extract_image_urls(event)
-            src = urls[-1] if urls else self._recent_image(key)
-            via = "当前消息" if urls else ("缓存桶" if src else "")
-            if not src:
-                src = self._gpt_recent_image(event)
-                if src:
-                    via = "gpt_image最近图"
-            if src:
-                data = await self._load_image_bytes(src)
+            if urls:
+                data = await self._load_image_bytes(urls[-1])
+                via = "当前消息"
+            # ②会话缓存桶（本地图已固化为字节，不怕 temp 被清；排在 gpt_image 前，你发的图优先）
+            if not data:
+                data = await self._recent_image_bytes(key)
                 if data:
-                    images = [data]
-                    logger.info(f"[AstraQzone] 配图来源={via}")
-                else:
-                    logger.info(f"[AstraQzone] 想配图但取图失败({via})，降级纯文字 | {src[:80]}")
+                    via = "缓存桶"
+            # ③兜底：gpt_image 刚画的图
+            if not data:
+                s = self._gpt_recent_image(event)
+                if s:
+                    data = await self._load_image_bytes(s)
+                    via = "gpt_image最近图"
+            if data:
+                images = [data]
+                logger.info(f"[AstraQzone] 配图来源={via}")
             else:
                 n = len(self._img_buffer.get(key) or [])
                 logger.info(
