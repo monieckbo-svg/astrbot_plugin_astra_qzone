@@ -5,6 +5,7 @@ Astra的QQ空间 - AstrBot插件入口
 """
 
 import asyncio
+import os
 import time
 
 import aiohttp
@@ -24,7 +25,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.1",
+    "1.5.2",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -62,19 +63,14 @@ class AstraQzonePlugin(Star):
 
     @staticmethod
     def _extract_image_urls(messages) -> list[str]:
-        """从消息组件里挑出图片的http(s) URL。"""
-        urls = []
+        """从消息组件里挑出图片来源：http(s) 网址 或 本地文件路径，都收。"""
+        srcs = []
         for comp in messages:
             if type(comp).__name__ == "Image":
                 u = getattr(comp, "url", None) or getattr(comp, "file", None)
-                if u and str(u).startswith("http"):
-                    urls.append(str(u))
-                else:
-                    logger.info(
-                        f"[AstraQzone] 图组件非http，暂取不到: "
-                        f"url={getattr(comp, 'url', None)!r} file={str(getattr(comp, 'file', None))[:60]!r}"
-                    )
-        return urls
+                if u:
+                    srcs.append(str(u))
+        return srcs
 
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _capture_images(self, event: AstrMessageEvent):
@@ -102,14 +98,25 @@ class AstraQzonePlugin(Star):
                 return u
         return None
 
-    async def _download(self, url: str) -> bytes | None:
+    async def _load_image_bytes(self, src: str) -> bytes | None:
+        """把图片来源读成字节：本地路径直接读文件，http(s) 则下载。"""
+        if not src.startswith("http"):
+            path = src[7:] if src.startswith("file://") else src
+            try:
+                if os.path.exists(path):
+                    with open(path, "rb") as f:
+                        return f.read()
+                logger.warning(f"[AstraQzone] 本地图片不存在(可能已被清理): {path[:80]}")
+            except Exception as e:
+                logger.error(f"[AstraQzone] 读本地图片失败: {e}")
+            return None
         try:
             timeout = aiohttp.ClientTimeout(total=60)
             async with aiohttp.ClientSession(timeout=timeout) as s:
-                async with s.get(url) as r:
+                async with s.get(src) as r:
                     if r.status == 200:
                         return await r.read()
-                    logger.warning(f"[AstraQzone] 下载图片 HTTP {r.status}: {url[:60]}")
+                    logger.warning(f"[AstraQzone] 下载图片 HTTP {r.status}: {src[:60]}")
         except Exception as e:
             logger.error(f"[AstraQzone] 下载图片失败: {e}")
         return None
@@ -163,7 +170,7 @@ class AstraQzonePlugin(Star):
             urls = self._extract_image_urls(event.get_messages())
             url = urls[-1] if urls else self._recent_image(key)
             if url:
-                data = await self._download(url)
+                data = await self._load_image_bytes(url)
                 if data:
                     images = [data]
                 else:
