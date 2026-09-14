@@ -1,5 +1,6 @@
 """QQ空间 API - 基于 Zhalslar/astrbot_plugin_qzone 的接口封装"""
 
+import base64
 import json
 import re
 import time
@@ -21,6 +22,7 @@ class QzoneAPI:
     LIKE_URL = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app"
     COMMENT_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
     REPLY_URL = "https://h5.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
+    UPLOAD_IMAGE_URL = "https://up.qzone.qq.com/cgi-bin/upload/cgi_upload_image"
 
     UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -210,9 +212,55 @@ class QzoneAPI:
         except Exception:
             return False
 
+    # ─── 上传图片 ───
+
+    async def _upload_image(self, image: bytes) -> Optional[tuple[str, str]]:
+        """上传单张图片到QQ空间图床，返回 (pic_bo, richval)。接口较脆弱，失败返回 None。"""
+        ctx = await self.session.get_ctx()
+        data = {
+            "filename": "filename",
+            "uploadtype": "1",
+            "albumtype": "7",
+            "skey": ctx.skey,
+            "uin": ctx.uin,
+            "p_skey": ctx.p_skey,
+            "output_type": "json",
+            "base64": "1",
+            "picfile": base64.b64encode(image).decode(),
+        }
+        headers = {
+            "User-Agent": self.UA,
+            "Referer": f"{self.BASE}/{ctx.uin}",
+            "Origin": self.BASE,
+        }
+        cookies = {"uin": f"o0{ctx.uin}", "skey": ctx.skey, "p_skey": ctx.p_skey}
+        try:
+            # 上传比普通请求慢，单独开一个更宽的超时
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(cookies=cookies, timeout=timeout) as s:
+                async with s.post(self.UPLOAD_IMAGE_URL, data=data, headers=headers) as r:
+                    parsed = self._parse(await r.text())
+        except Exception as e:
+            logger.error(f"[AstraQzone] 图片上传失败: {e}")
+            return None
+        if not parsed:
+            logger.warning("[AstraQzone] 图片上传返回解析失败")
+            return None
+        d = parsed.get("data") or {}
+        try:
+            pic_bo = d["url"].split("&bo=", 1)[1]
+            richval = ",{},{},{},{},{},{},,{},{}".format(
+                d["albumid"], d["lloc"], d["sloc"], d["type"],
+                d["height"], d["width"], d["height"], d["width"],
+            )
+        except (KeyError, IndexError) as e:
+            logger.warning(f"[AstraQzone] 上传结果字段缺失: {e} keys={list(d.keys())}")
+            return None
+        return pic_bo, richval
+
     # ─── 发说说 ───
 
-    async def publish(self, content: str) -> Optional[str]:
+    async def publish(self, content: str, images: Optional[list[bytes]] = None) -> Optional[str]:
         ctx = await self.session.get_ctx()
         http = await self._get_http()
         data = {
@@ -222,6 +270,21 @@ class QzoneAPI:
             "code_version": "1", "format": "json",
             "qzreferrer": f"{self.BASE}/{ctx.uin}",
         }
+        if images:
+            pic_bos, richvals = [], []
+            for img in images:
+                res = await self._upload_image(img)
+                if not res:
+                    logger.warning("[AstraQzone] 有图上传失败，本条说说降级为纯文字")
+                    continue
+                pic_bos.append(res[0])
+                richvals.append(res[1])
+            if pic_bos:
+                data.update(
+                    pic_bo=",".join(pic_bos),
+                    richtype="1",
+                    richval="\t".join(richvals),
+                )
         try:
             async with http.post(self.PUBLISH_URL, data=data,
                                  params={"g_tk": ctx.gtk, "uin": ctx.uin}) as r:

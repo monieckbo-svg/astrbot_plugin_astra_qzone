@@ -7,6 +7,7 @@ Astra的QQ空间 - AstrBot插件入口
 import asyncio
 import time
 
+import aiohttp
 from astrbot.api import logger, AstrBotConfig
 from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
@@ -23,7 +24,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.3.0",
+    "1.5.0",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -34,6 +35,11 @@ class AstraQzonePlugin(Star):
         self.monitor: QzoneMonitor | None = None
         self._task: asyncio.Task | None = None
         self._booted = False
+        # 各会话最近出现的图片：key=会话唯一标识, value=[(时间戳, 图片URL), ...]
+        # 私聊/群聊/不同平台天然分桶隔离
+        self._img_buffer: dict[str, list[tuple[float, str]]] = {}
+        self._IMG_TTL = 600   # 图片有效期(秒)，超时视作过期
+        self._IMG_KEEP = 8    # 每个会话最多留几张
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _capture_client(self, event: AiocqhttpMessageEvent):
@@ -53,6 +59,48 @@ class AstraQzonePlugin(Star):
             return
         if self.monitor:
             self.monitor.on_message()
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def _capture_images(self, event: AstrMessageEvent):
+        """缓存每个会话最近出现的图片URL，供主动发说说时配图用。
+        不限平台——星星在Discord还是QQ小号里聊都收得到；按会话唯一标识分桶，
+        私聊只见私聊的图、群聊只见本群的图。"""
+        urls = []
+        for comp in event.get_messages():
+            if type(comp).__name__ == "Image":
+                u = getattr(comp, "url", None) or getattr(comp, "file", None)
+                if u and str(u).startswith("http"):
+                    urls.append(str(u))
+        if not urls:
+            return
+        key = event.unified_msg_origin
+        now = time.time()
+        buf = self._img_buffer.setdefault(key, [])
+        for u in urls:
+            buf.append((now, u))
+        # 滚动裁剪：只留时间窗内的最近几张
+        cutoff = now - self._IMG_TTL
+        self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
+
+    def _recent_image(self, key: str) -> str | None:
+        """取某会话缓存里最近一张仍在有效期内的图片URL。"""
+        now = time.time()
+        for t, u in reversed(self._img_buffer.get(key) or []):
+            if now - t <= self._IMG_TTL:
+                return u
+        return None
+
+    async def _download(self, url: str) -> bytes | None:
+        try:
+            timeout = aiohttp.ClientTimeout(total=60)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(url) as r:
+                    if r.status == 200:
+                        return await r.read()
+                    logger.warning(f"[AstraQzone] 下载图片 HTTP {r.status}: {url[:60]}")
+        except Exception as e:
+            logger.error(f"[AstraQzone] 下载图片失败: {e}")
+        return None
 
     async def _boot(self):
         """启动后台监控"""
@@ -84,25 +132,40 @@ class AstraQzonePlugin(Star):
     # ─── LLM 工具 ───
 
     @filter.llm_tool(name="post_shuoshuo")
-    async def post_shuoshuo(self, event: AstrMessageEvent, content: str) -> MessageEventResult:
+    async def post_shuoshuo(self, event: AstrMessageEvent, content: str,
+                            attach_image: str = "false") -> MessageEventResult:
         """在QQ空间发布说说。聊天中想记录生活、分享心情时调用，不要频繁使用。
 
         Args:
             content(str): 说说内容，1-3句自然口语化，像真人发空间。只输出内容，不要带时间地点元信息。
+            attach_image(str): 是否给这条说说配图，填 "true" 或 "false"。只有当这条说说的内容和刚才对话里出现过的图片相关、配上更自然时才填 "true"；纯文字感慨、跟图无关就填 "false"。配的是本次对话里最近出现的那张图。
         """
         if not self.session.client:
             yield event.plain_result("[AstraQzone] 还没连上QQ，先让宝宝发条消息触发初始化吧。")
             return
 
-        tid = await self.api.publish(content)
+        images = None
+        if str(attach_image).lower() in ("true", "1", "yes"):
+            url = self._recent_image(event.unified_msg_origin)
+            if url:
+                data = await self._download(url)
+                if data:
+                    images = [data]
+                else:
+                    logger.info("[AstraQzone] 想配图但下载失败，本条降级纯文字")
+            else:
+                logger.info("[AstraQzone] 想配图但当前会话缓存里没有有效图，本条降级纯文字")
+
+        tid = await self.api.publish(content, images=images)
         if tid:
             if self.monitor:
                 self.monitor._state["last_post_time"] = time.time()
                 self.monitor._state["post_contents"][tid] = content
                 self.monitor._save()
                 self.monitor.stats["posts"] += 1
-            logger.info(f"[AstraQzone] 说说发布成功: {content[:40]}")
-            yield event.plain_result(f"说说发布成功: {content}")
+            tag = "（带图）" if images else ""
+            logger.info(f"[AstraQzone] 说说发布成功{tag}: {content[:40]}")
+            yield event.plain_result(f"说说发布成功{tag}: {content}")
         else:
             yield event.plain_result("说说发布失败，可能被限流了，稍后重试。")
 
