@@ -24,7 +24,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.0",
+    "1.5.1",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -60,17 +60,28 @@ class AstraQzonePlugin(Star):
         if self.monitor:
             self.monitor.on_message()
 
+    @staticmethod
+    def _extract_image_urls(messages) -> list[str]:
+        """从消息组件里挑出图片的http(s) URL。"""
+        urls = []
+        for comp in messages:
+            if type(comp).__name__ == "Image":
+                u = getattr(comp, "url", None) or getattr(comp, "file", None)
+                if u and str(u).startswith("http"):
+                    urls.append(str(u))
+                else:
+                    logger.info(
+                        f"[AstraQzone] 图组件非http，暂取不到: "
+                        f"url={getattr(comp, 'url', None)!r} file={str(getattr(comp, 'file', None))[:60]!r}"
+                    )
+        return urls
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _capture_images(self, event: AstrMessageEvent):
         """缓存每个会话最近出现的图片URL，供主动发说说时配图用。
         不限平台——星星在Discord还是QQ小号里聊都收得到；按会话唯一标识分桶，
         私聊只见私聊的图、群聊只见本群的图。"""
-        urls = []
-        for comp in event.get_messages():
-            if type(comp).__name__ == "Image":
-                u = getattr(comp, "url", None) or getattr(comp, "file", None)
-                if u and str(u).startswith("http"):
-                    urls.append(str(u))
+        urls = self._extract_image_urls(event.get_messages())
         if not urls:
             return
         key = event.unified_msg_origin
@@ -81,6 +92,7 @@ class AstraQzonePlugin(Star):
         # 滚动裁剪：只留时间窗内的最近几张
         cutoff = now - self._IMG_TTL
         self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
+        logger.info(f"[AstraQzone] 缓存图片{len(urls)}张 会话尾={key[-12:]}")
 
     def _recent_image(self, key: str) -> str | None:
         """取某会话缓存里最近一张仍在有效期内的图片URL。"""
@@ -146,7 +158,10 @@ class AstraQzonePlugin(Star):
 
         images = None
         if str(attach_image).lower() in ("true", "1", "yes"):
-            url = self._recent_image(event.unified_msg_origin)
+            key = event.unified_msg_origin
+            # 先从触发这条说说的消息本身挑图，绕开"钩子慢一拍"的时序问题；没有再翻缓存
+            urls = self._extract_image_urls(event.get_messages())
+            url = urls[-1] if urls else self._recent_image(key)
             if url:
                 data = await self._download(url)
                 if data:
@@ -154,7 +169,11 @@ class AstraQzonePlugin(Star):
                 else:
                     logger.info("[AstraQzone] 想配图但下载失败，本条降级纯文字")
             else:
-                logger.info("[AstraQzone] 想配图但当前会话缓存里没有有效图，本条降级纯文字")
+                n = len(self._img_buffer.get(key) or [])
+                logger.info(
+                    f"[AstraQzone] 想配图但没找到图，降级纯文字 | "
+                    f"会话尾={key[-12:]} 当前消息图数={len(urls)} 缓存桶图数={n}"
+                )
 
         tid = await self.api.publish(content, images=images)
         if tid:
