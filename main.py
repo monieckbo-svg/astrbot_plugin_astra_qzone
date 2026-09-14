@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.3",
+    "1.5.4",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -67,18 +67,17 @@ class AstraQzonePlugin(Star):
     )
 
     @classmethod
-    def _extract_image_urls(cls, event) -> list[str]:
-        """从消息里挑图片来源：图片组件（本地文件优先、其次远程url），
+    def _extract_from_comps(cls, comps) -> list[str]:
+        """从一串消息组件里挑图片来源：图片组件（本地文件优先、其次远程url），
         外加文本里正则捞到的图片链接（gpt_image 那种 markdown 链接）。"""
         srcs: list[str] = []
         texts: list[str] = []
-        for comp in event.get_messages():
+        for comp in comps:
             cname = type(comp).__name__
             if cname == "Image":
                 f = getattr(comp, "file", None)
                 u = getattr(comp, "url", None)
                 picked = None
-                # 本地文件存在就优先用它，能直接读、不必碰网络
                 for c in (f, u):
                     if not c:
                         continue
@@ -101,6 +100,10 @@ class AstraQzonePlugin(Star):
                     srcs.append(m)
         return srcs
 
+    @classmethod
+    def _extract_image_urls(cls, event) -> list[str]:
+        return cls._extract_from_comps(event.get_messages())
+
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _capture_images(self, event: AstrMessageEvent):
         """缓存每个会话最近出现的图片URL，供主动发说说时配图用。
@@ -119,12 +122,36 @@ class AstraQzonePlugin(Star):
         self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
         logger.info(f"[AstraQzone] 缓存图片{len(urls)}张 会话尾={key[-12:]}")
 
+    @filter.on_decorating_result()
+    async def _capture_sent_images(self, event: AstrMessageEvent):
+        """星星自己发出去的回复里若带图（比如画图插件吐的图片链接），也收进当前会话的桶。
+        画的图链接藏在它自己的输出里，只蹲进来的消息是够不着的。"""
+        result = event.get_result()
+        if not result or not getattr(result, "chain", None):
+            return
+        srcs = self._extract_from_comps(result.chain)
+        if not srcs:
+            return
+        key = event.unified_msg_origin
+        now = time.time()
+        buf = self._img_buffer.setdefault(key, [])
+        for u in srcs:
+            buf.append((now, u))
+        cutoff = now - self._IMG_TTL
+        self._img_buffer[key] = [(t, u) for (t, u) in buf if t >= cutoff][-self._IMG_KEEP:]
+        logger.info(f"[AstraQzone] 缓存发出图{len(srcs)}张 会话尾={key[-12:]}")
+
     def _recent_image(self, key: str) -> str | None:
-        """取某会话缓存里最近一张仍在有效期内的图片URL。"""
+        """取某会话缓存里最近一张仍可用的图片：过期的跳过，本地文件已被清理的也跳过。"""
         now = time.time()
         for t, u in reversed(self._img_buffer.get(key) or []):
-            if now - t <= self._IMG_TTL:
-                return u
+            if now - t > self._IMG_TTL:
+                continue
+            if not u.startswith("http"):
+                p = u[7:] if u.startswith("file://") else u
+                if not os.path.exists(p):
+                    continue
+            return u
         return None
 
     async def _load_image_bytes(self, src: str) -> bytes | None:
