@@ -6,6 +6,7 @@ Astra的QQ空间 - AstrBot插件入口
 
 import asyncio
 import os
+import re
 import time
 
 import aiohttp
@@ -25,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.2",
+    "1.5.3",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -61,15 +62,43 @@ class AstraQzonePlugin(Star):
         if self.monitor:
             self.monitor.on_message()
 
-    @staticmethod
-    def _extract_image_urls(messages) -> list[str]:
-        """从消息组件里挑出图片来源：http(s) 网址 或 本地文件路径，都收。"""
-        srcs = []
-        for comp in messages:
-            if type(comp).__name__ == "Image":
-                u = getattr(comp, "url", None) or getattr(comp, "file", None)
-                if u:
-                    srcs.append(str(u))
+    _IMG_URL_RE = re.compile(
+        r'https?://[^\s)\]<>"\']+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)\]<>"\']*)?', re.I
+    )
+
+    @classmethod
+    def _extract_image_urls(cls, event) -> list[str]:
+        """从消息里挑图片来源：图片组件（本地文件优先、其次远程url），
+        外加文本里正则捞到的图片链接（gpt_image 那种 markdown 链接）。"""
+        srcs: list[str] = []
+        texts: list[str] = []
+        for comp in event.get_messages():
+            cname = type(comp).__name__
+            if cname == "Image":
+                f = getattr(comp, "file", None)
+                u = getattr(comp, "url", None)
+                picked = None
+                # 本地文件存在就优先用它，能直接读、不必碰网络
+                for c in (f, u):
+                    if not c:
+                        continue
+                    s = str(c)
+                    p = s[7:] if s.startswith("file://") else s
+                    if not s.startswith("http") and os.path.exists(p):
+                        picked = s
+                        break
+                if not picked:
+                    picked = str(u or f) if (u or f) else None
+                if picked and picked not in srcs:
+                    srcs.append(picked)
+            elif cname == "Plain":
+                t = getattr(comp, "text", "")
+                if t:
+                    texts.append(str(t))
+        for t in texts:
+            for m in cls._IMG_URL_RE.findall(t):
+                if m not in srcs:
+                    srcs.append(m)
         return srcs
 
     @filter.event_message_type(filter.EventMessageType.ALL)
@@ -77,7 +106,7 @@ class AstraQzonePlugin(Star):
         """缓存每个会话最近出现的图片URL，供主动发说说时配图用。
         不限平台——星星在Discord还是QQ小号里聊都收得到；按会话唯一标识分桶，
         私聊只见私聊的图、群聊只见本群的图。"""
-        urls = self._extract_image_urls(event.get_messages())
+        urls = self._extract_image_urls(event)
         if not urls:
             return
         key = event.unified_msg_origin
@@ -112,13 +141,18 @@ class AstraQzonePlugin(Star):
             return None
         try:
             timeout = aiohttp.ClientTimeout(total=60)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                              "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Referer": src,
+            }
             async with aiohttp.ClientSession(timeout=timeout) as s:
-                async with s.get(src) as r:
+                async with s.get(src, headers=headers) as r:
                     if r.status == 200:
                         return await r.read()
-                    logger.warning(f"[AstraQzone] 下载图片 HTTP {r.status}: {src[:60]}")
+                    logger.warning(f"[AstraQzone] 下载图片 HTTP {r.status}: {src[:80]}")
         except Exception as e:
-            logger.error(f"[AstraQzone] 下载图片失败: {e}")
+            logger.error(f"[AstraQzone] 下载图片失败({type(e).__name__}): {e} | {src[:80]}")
         return None
 
     async def _boot(self):
@@ -167,7 +201,7 @@ class AstraQzonePlugin(Star):
         if str(attach_image).lower() in ("true", "1", "yes"):
             key = event.unified_msg_origin
             # 先从触发这条说说的消息本身挑图，绕开"钩子慢一拍"的时序问题；没有再翻缓存
-            urls = self._extract_image_urls(event.get_messages())
+            urls = self._extract_image_urls(event)
             url = urls[-1] if urls else self._recent_image(key)
             if url:
                 data = await self._load_image_bytes(url)
