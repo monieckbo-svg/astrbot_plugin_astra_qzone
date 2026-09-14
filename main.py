@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.6",
+    "1.6.0",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -154,17 +154,17 @@ class AstraQzonePlugin(Star):
         self._img_buffer[key] = [x for x in buf if x[0] >= cutoff][-self._IMG_KEEP:]
         return added
 
-    async def _recent_image_bytes(self, key: str) -> bytes | None:
-        """取会话桶里最近一张可用图的字节：已固化的直接给，链接的现下。"""
+    async def _recent_cache(self, key: str) -> tuple[float, bytes] | None:
+        """取会话桶里最近一张可用图 (时间戳, 字节)：已固化的直接给，链接的现下。"""
         now = time.time()
         for ts, kind, payload in reversed(self._img_buffer.get(key) or []):
             if now - ts > self._IMG_TTL:
                 continue
             if kind == "bytes":
-                return payload
+                return (ts, payload)
             b = await self._load_image_bytes(payload)
             if b:
-                return b
+                return (ts, b)
         return None
 
     async def _load_image_bytes(self, src: str) -> bytes | None:
@@ -224,10 +224,10 @@ class AstraQzonePlugin(Star):
 
     # ─── LLM 工具 ───
 
-    def _gpt_recent_image(self, event) -> str | None:
-        """兜底：向 gpt_image 插件要它记的本会话最近一张图。
-        它画的图是后台异步推送的、绕开所有钩子，但它自己在 last_image_url 里留了账，
-        按 event.session_id 存（跟它对齐，不是 unified_msg_origin）。"""
+    def _gpt_recent(self, event) -> tuple[float, str] | None:
+        """兜底：向 gpt_image 要它记的本会话最近一张图 (画图时间戳, 链接)。
+        它画的图后台异步推送、绕开所有钩子，但自己在 last_image_url 里留了账，
+        按 event.session_id 存（跟它对齐，不是 unified_msg_origin），并带 ts。"""
         try:
             meta = self.context.get_registered_star("astrbot_plugin_gpt_image")
             inst = getattr(meta, "star_cls", None) or getattr(meta, "instance", None) if meta else None
@@ -236,7 +236,7 @@ class AstraQzonePlugin(Star):
                 return None
             rec = store.get(event.session_id) or store.get(event.session_id or "default")
             if rec and rec.get("url"):
-                return rec["url"]
+                return (float(rec.get("ts", 0) or 0), rec["url"])
         except Exception as e:
             logger.info(f"[AstraQzone] 取 gpt_image 最近图失败: {e}")
         return None
@@ -259,22 +259,23 @@ class AstraQzonePlugin(Star):
             key = event.unified_msg_origin
             data = None
             via = ""
-            # ①触发消息自带的图（刚落地，当场读）
+            # ①触发消息自带的图（此刻最新，直接用）
             urls = self._extract_image_urls(event)
             if urls:
                 data = await self._load_image_bytes(urls[-1])
                 via = "当前消息"
-            # ②会话缓存桶（本地图已固化为字节，不怕 temp 被清；排在 gpt_image 前，你发的图优先）
+            # ②否则比时间：你发的最新一张 vs 他画的那张，谁晚用谁
             if not data:
-                data = await self._recent_image_bytes(key)
-                if data:
-                    via = "缓存桶"
-            # ③兜底：gpt_image 刚画的图
-            if not data:
-                s = self._gpt_recent_image(event)
-                if s:
-                    data = await self._load_image_bytes(s)
-                    via = "gpt_image最近图"
+                cache = await self._recent_cache(key)   # (ts, bytes)
+                gpt = self._gpt_recent(event)           # (ts, url)
+                pick = None  # (via, ts, kind, payload)
+                if cache:
+                    pick = ("缓存桶", cache[0], "bytes", cache[1])
+                if gpt and (pick is None or gpt[0] > pick[1]):
+                    pick = ("gpt_image最近图", gpt[0], "url", gpt[1])
+                if pick:
+                    via = pick[0]
+                    data = pick[3] if pick[2] == "bytes" else await self._load_image_bytes(pick[3])
             if data:
                 images = [data]
                 logger.info(f"[AstraQzone] 配图来源={via}")
