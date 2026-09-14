@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.5.4",
+    "1.5.5",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -211,6 +211,23 @@ class AstraQzonePlugin(Star):
 
     # ─── LLM 工具 ───
 
+    def _gpt_recent_image(self, event) -> str | None:
+        """兜底：向 gpt_image 插件要它记的本会话最近一张图。
+        它画的图是后台异步推送的、绕开所有钩子，但它自己在 last_image_url 里留了账，
+        按 event.session_id 存（跟它对齐，不是 unified_msg_origin）。"""
+        try:
+            meta = self.context.get_registered_star("astrbot_plugin_gpt_image")
+            inst = getattr(meta, "star_cls", None) or getattr(meta, "instance", None) if meta else None
+            store = getattr(inst, "last_image_url", None) if inst else None
+            if not store:
+                return None
+            rec = store.get(event.session_id) or store.get(event.session_id or "default")
+            if rec and rec.get("url"):
+                return rec["url"]
+        except Exception as e:
+            logger.info(f"[AstraQzone] 取 gpt_image 最近图失败: {e}")
+        return None
+
     @filter.llm_tool(name="post_shuoshuo")
     async def post_shuoshuo(self, event: AstrMessageEvent, content: str,
                             attach_image: str = "false") -> MessageEventResult:
@@ -227,15 +244,21 @@ class AstraQzonePlugin(Star):
         images = None
         if str(attach_image).lower() in ("true", "1", "yes"):
             key = event.unified_msg_origin
-            # 先从触发这条说说的消息本身挑图，绕开"钩子慢一拍"的时序问题；没有再翻缓存
+            # ①触发消息自带的图 → ②会话缓存桶 → ③兜底：gpt_image 刚画的图
             urls = self._extract_image_urls(event)
-            url = urls[-1] if urls else self._recent_image(key)
-            if url:
-                data = await self._load_image_bytes(url)
+            src = urls[-1] if urls else self._recent_image(key)
+            via = "当前消息" if urls else ("缓存桶" if src else "")
+            if not src:
+                src = self._gpt_recent_image(event)
+                if src:
+                    via = "gpt_image最近图"
+            if src:
+                data = await self._load_image_bytes(src)
                 if data:
                     images = [data]
+                    logger.info(f"[AstraQzone] 配图来源={via}")
                 else:
-                    logger.info("[AstraQzone] 想配图但下载失败，本条降级纯文字")
+                    logger.info(f"[AstraQzone] 想配图但取图失败({via})，降级纯文字 | {src[:80]}")
             else:
                 n = len(self._img_buffer.get(key) or [])
                 logger.info(
