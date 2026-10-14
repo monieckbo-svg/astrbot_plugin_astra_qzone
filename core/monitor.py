@@ -213,7 +213,15 @@ class QzoneMonitor:
             return []
 
     async def _get_recent_chat_summary(self) -> str:
-        """捞最近活跃的几个会话（私聊/群聊，跨平台）各自的真实对话，最近的排最前。"""
+        """捞最近活跃的几个会话（私聊/群聊）各自的真实对话，最近的排最前。
+        任何异常都吞掉返回空串——读不到上下文也要能照常发普通说说。"""
+        try:
+            return await self._collect_chat_summary()
+        except Exception as e:
+            logger.error(f"[AstraQzone] 读对话上下文出错，改发普通说说: {e}")
+            return ""
+
+    async def _collect_chat_summary(self) -> str:
         limit = int(self.config.get("context_msg_limit", 20) or 20)
         n_sess = int(self.config.get("context_sessions", 2) or 2)
         window = float(self.config.get("context_window_hours", 12) or 12) * 3600
@@ -966,12 +974,8 @@ class QzoneMonitor:
                 f"不一定要直接写{uname}，可以是被对话勾起来的别的念头。1-3句，像自言自语。"
             )
         else:
-            # 从config素材池随机抽取
-            pool_str = self.config.get("material_pool", "")
-            pool = [s.strip() for s in pool_str.split(",") if s.strip()] if pool_str else []
-            if pool:
-                picks = random.sample(pool, k=min(random.randint(2, 4), len(pool)))
-                parts.append(f"灵感素材（随机抽到的，自由发挥）：{'、'.join(picks)}")
+            # 没读到上下文（没人聊过 / 读取出错）也照常发，写一条普通的
+            logger.info("[AstraQzone] 没读到对话上下文，发一条普通说说")
             parts.append("写一条说说，1-3句，像自言自语。")
 
         if recent_posts:

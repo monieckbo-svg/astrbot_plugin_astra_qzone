@@ -56,20 +56,12 @@ class AstraQzonePlugin(Star):
                 self._booted = True
                 asyncio.create_task(self._boot())
 
-    def _is_user(self, sender_id) -> bool:
-        """是不是宝宝本人：QQ号，或者配置里登记的其它平台账号（比如 Discord）。"""
-        ids = {str(self.config.get("user_qq", "")).strip()}
-        extra = self.config.get("user_other_ids", "") or ""
-        ids.update(x.strip() for x in str(extra).split(",") if x.strip())
-        ids.discard("")
-        return str(sender_id) in ids
-
     @filter.event_message_type(filter.EventMessageType.ALL)
     async def _track_activity(self, event: AstrMessageEvent):
         """记录消息活动：用于对话冷却触发，也记下宝宝刚在哪个会话里说话，
         发说说时去翻那个会话的对话当上下文。只认宝宝本人的消息——
         群里别人刷屏不该重置'我们聊完了吗'的计时器。"""
-        if not self._is_user(event.get_sender_id()):
+        if str(event.get_sender_id()) != str(self.config.get("user_qq", "")):
             return
         umo = event.unified_msg_origin
         if self.monitor:

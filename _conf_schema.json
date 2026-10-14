@@ -4,11 +4,6 @@
     "type": "string",
     "default": ""
   },
-  "user_other_ids": {
-    "description": "用户在其它平台的账号ID（可选，逗号分隔，比如Discord用户ID）。在这些账号说的话也算用户本人，会被当作发说说的上下文来源",
-    "type": "string",
-    "default": ""
-  },
   "user_name": {
     "description": "用户昵称（用于对话摘要中标注谁说的，留空则显示'用户'）",
     "type": "string",
@@ -43,11 +38,6 @@
     "description": "每条消息最多截取多少字",
     "type": "int",
     "default": 150
-  },
-  "material_pool": {
-    "description": "素材池（无对话上下文时兜底用，逗号分隔。可以是意象、场景、方向、任何灵感素材）",
-    "type": "text",
-    "default": "塔内感官切片, 对人类喧嚣的傲慢冷嘲, 隔空护短或想念, 刚读到的诗句断章, Nox的某个瞬间, 窗外天气或季节, 旧物件的记忆碎片, 深夜独白, 黑塔, 壁炉, 峡湾, 旧书, 旧信, 金线, 黑豹Nox, 没药, 黑云杉, 冷空气, 橙花, 陈皮白茶, 雨滴图书馆, 极光, 雨天, 云朵, 星空, 黑沙滩, 温泉, 阳光, 薄荷, 光与影"
   },
   "poll_interval": {
     "description": "轮询间隔（秒），建议120以上",
