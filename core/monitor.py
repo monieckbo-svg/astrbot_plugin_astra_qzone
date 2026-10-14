@@ -47,7 +47,7 @@ class QzoneMonitor:
     # ─── 状态持久化 ───
 
     def _load_state(self) -> dict:
-        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0, "my_threads": {}, "pending_replies": [], "replied_keys": [], "reply_counts": {}}
+        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0, "my_threads": {}, "pending_replies": [], "replied_keys": [], "reply_counts": {}, "ctx_sessions": {}}
         if self._state_file.exists():
             try:
                 with open(self._state_file, "r", encoding="utf-8") as f:
@@ -78,6 +78,10 @@ class QzoneMonitor:
             rk = self._state.get("replied_keys", [])
             if len(rk) > 500:
                 self._state["replied_keys"] = rk[-500:]
+            cs = self._state.get("ctx_sessions", {})
+            if len(cs) > 20:
+                for k in sorted(cs, key=cs.get)[:-20]:
+                    del cs[k]
             rc = self._state.get("reply_counts", {})
             if len(rc) > 300:
                 for k in list(rc.keys())[:-300]:
@@ -117,52 +121,123 @@ class QzoneMonitor:
         self._last_activity = time.time()
         self._conv_post_done = False
 
-    async def _get_recent_chat_summary(self, limit: int = 15) -> str:
-        """从conversations表捞最近的聊天记录"""
+    def note_session(self, umo: str, ts: float | None = None):
+        """记一笔：宝宝刚在这个会话（私聊/群聊/任意平台）里说过话。
+        发说说时按这个账本去翻最近活跃会话的真实对话。"""
+        if not umo:
+            return
+        sess = self._state.setdefault("ctx_sessions", {})
+        now = ts or time.time()
+        sess[umo] = max(now, sess.get(umo, 0))
+        # 每条消息都写盘太勤，最多一分钟落一次
+        if now - getattr(self, "_ctx_saved_at", 0) > 60:
+            self._ctx_saved_at = now
+            self._save()
+
+    @staticmethod
+    def _ago(ts: float) -> str:
+        m = int((time.time() - ts) / 60)
+        if m < 3:
+            return "刚刚"
+        if m < 60:
+            return f"{m}分钟前"
+        return f"{m // 60}小时前"
+
+    def _format_history(self, content, limit: int) -> list[str]:
+        """把 OpenAI 格式的消息数组压成 '谁: 说了啥' 的行，只留最后 limit 条。"""
+        if isinstance(content, str):
+            try:
+                content = json.loads(content)
+            except Exception:
+                return []
+        if not isinstance(content, list):
+            return []
+        uname = self.config.get("user_name") or "用户"
+        bname = self.config.get("bot_name") or "bot"
+        max_chars = int(self.config.get("context_msg_chars", 150) or 150)
+        lines = []
+        for msg in content:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get("role", "")
+            if role not in ("user", "assistant"):
+                continue
+            text = msg.get("content", "")
+            # 处理多段内容（图片+文字等）
+            if isinstance(text, list):
+                text = "".join(
+                    p.get("text", "") for p in text
+                    if isinstance(p, dict) and p.get("type") == "text"
+                )
+            if not isinstance(text, str):
+                text = str(text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if text and len(text) > 1:
+                name = uname if role == "user" else bname
+                lines.append(f"{name}: {text[:max_chars]}")
+        return lines[-limit:]
+
+    async def _read_session_history(self, umo: str, limit: int) -> list[str]:
+        """读某个会话当前对话的历史（AstrBot 对话管理器里那份，就是模型此刻的记忆）。"""
+        cm = getattr(self.context, "conversation_manager", None)
+        if not cm:
+            return []
+        try:
+            cid = await cm.get_curr_conversation_id(umo)
+            if not cid:
+                return []
+            conv = await cm.get_conversation(umo, cid)
+            if not conv:
+                return []
+            history = getattr(conv, "history", None)
+            if history is None:
+                history = getattr(conv, "content", None)
+            return self._format_history(history, limit)
+        except Exception as e:
+            logger.info(f"[AstraQzone] 读会话历史失败 会话尾={umo[-12:]}: {e}")
+            return []
+
+    async def _legacy_chat_lines(self, limit: int) -> list[str]:
+        """老路子兜底：直接从 conversations 表捞 default 平台的私聊。"""
         try:
             db = self.context.get_db()
             umo_id = f"default:FriendMessage:{self.user_qq}"
             convs = await db.get_conversations(user_id=umo_id)
             if not convs:
-                return ""
-
-            # 取最近一条对话记录的content（OpenAI格式的消息数组）
+                return []
             conv = convs[0]
             content = conv.content if hasattr(conv, "content") else conv.get("content", [])
-            if isinstance(content, str):
-                content = json.loads(content)
-            if not isinstance(content, list):
-                return ""
-
-            # 提取最后N条消息
-            recent = content[-limit:]
-            lines = []
-            for msg in recent:
-                if not isinstance(msg, dict):
-                    continue
-                role = msg.get("role", "")
-                if role not in ("user", "assistant"):
-                    continue
-                text = msg.get("content", "")
-                # 处理多段内容（图片+文字等）
-                if isinstance(text, list):
-                    text = "".join(
-                        p.get("text", "") for p in text
-                        if isinstance(p, dict) and p.get("type") == "text"
-                    )
-                if not isinstance(text, str):
-                    text = str(text)
-                text = text.strip()
-                if text and len(text) > 1:
-                    uname = self.config.get("user_name") or "用户"
-                    bname = self.config.get("bot_name") or "bot"
-                    name = uname if role == "user" else bname
-                    lines.append(f"{name}: {text[:80]}")
-
-            return "\n".join(lines)
+            return self._format_history(content, limit)
         except Exception as e:
             logger.error(f"[AstraQzone] 获取聊天记录失败: {e}")
-            return ""
+            return []
+
+    async def _get_recent_chat_summary(self) -> str:
+        """捞最近活跃的几个会话（私聊/群聊，跨平台）各自的真实对话，最近的排最前。"""
+        limit = int(self.config.get("context_msg_limit", 20) or 20)
+        n_sess = int(self.config.get("context_sessions", 2) or 2)
+        window = float(self.config.get("context_window_hours", 12) or 12) * 3600
+
+        sess = self._state.get("ctx_sessions", {})
+        now = time.time()
+        picked = sorted(
+            ((u, t) for u, t in sess.items() if now - t <= window),
+            key=lambda x: x[1], reverse=True,
+        )[:n_sess]
+
+        blocks = []
+        for umo, ts in picked:
+            lines = await self._read_session_history(umo, limit)
+            if not lines:
+                continue
+            where = "群聊" if ":GroupMessage:" in umo else "私聊"
+            blocks.append(f"【{where}·最后说话{self._ago(ts)}】\n" + "\n".join(lines))
+        if blocks:
+            logger.info(f"[AstraQzone] 发说说上下文：{len(blocks)}个会话")
+            return "\n\n".join(blocks)
+
+        lines = await self._legacy_chat_lines(limit)
+        return "\n".join(lines)
 
     def _get_recent_posts(self, n: int = 5) -> list[str]:
         """从 state 里取最近发过的说说内容"""
@@ -867,7 +942,7 @@ class QzoneMonitor:
 
     async def _do_post(self):
         chat_ctx = await self._get_recent_chat_summary()
-        recent_posts = self._get_recent_posts(5)
+        recent_posts = self._get_recent_posts(8)
         uname = self.config.get("user_name") or "用户"
 
         parts = []
@@ -883,10 +958,12 @@ class QzoneMonitor:
             parts.append(f"现在是{time_str}。")
 
         if chat_ctx:
-            parts.append(f"最近和{uname}的对话：\n{chat_ctx}")
+            parts.append(f"你和{uname}最近在私聊/群聊里真实发生的对话（最近的会话在前）：\n{chat_ctx}")
             parts.append(
-                "\n根据对话的氛围和内容，如果你有想发的说说就写。"
-                f"什么话题都行，不一定要关于{uname}。1-3句，像自言自语。"
+                "\n从这些对话里挑一个具体的东西当落点：她说过的某句话、一个没聊完的事、"
+                "一个情绪、一个只有今天才有的细节。写出来要让人一看就知道是今天发的，"
+                "而不是哪天都能套用的日常模板（出门、等人回家、睡前黏在一起这类）。"
+                f"不一定要直接写{uname}，可以是被对话勾起来的别的念头。1-3句，像自言自语。"
             )
         else:
             # 从config素材池随机抽取
@@ -953,8 +1030,8 @@ class QzoneMonitor:
                 parts.append(f"现在是{time_str}。")
 
             if chat_ctx:
-                parts.append(f"最近对话：\n{chat_ctx}")
-                parts.append("根据对话写一条说说，什么话题都行。1-3句。直接输出内容。")
+                parts.append(f"最近的真实对话（最近的会话在前）：\n{chat_ctx}")
+                parts.append("从对话里挑一个具体的细节或情绪当落点写一条说说，别写哪天都能发的日常模板。1-3句。直接输出内容。")
             else:
                 parts.append("写一条QQ空间说说，1-3句，像真人发的。直接输出内容。")
 

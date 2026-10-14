@@ -24,6 +24,17 @@ AstrBot 的 QQ 空间插件：秒评说说、评论区 AI 对话、随缘点赞�
 
 ②和③会比较各自的时间戳，谁最近发/画就用谁。图片加载兼容本地路径直读与远程链接下载（下载带浏览器 UA，减少图床拦截）。缓存默认保留每会话最近 8 张、时间窗 10 分钟。
 
+## 自动发说说的上下文 —— 结合最近真实聊过的东西
+
+自动发说说（对话冷却触发 / 定时兜底 / `/aqz post`）不再只靠素材池和人设硬编，而是去翻**最近和你说过话的会话**的真实对话：
+
+- 你（`user_qq`，以及 `user_other_ids` 里登记的其它平台账号）每在一个会话里说话，就记一笔「这个会话刚活跃过」。私聊、群聊、QQ、Discord 都算，账本持久化在 `state.json`，重启不丢。
+- 发说说时取 `context_window_hours` 小时内最近活跃的 `context_sessions` 个会话，从 AstrBot 对话管理器里读各自**当前对话**的历史（就是模型此刻的记忆），每个取最后 `context_msg_limit` 条。
+- 提示词会要求模型从对话里挑一个具体细节当落点，避免每天都能套用的日常模板；同时对比最近 8 条说说去重。
+- 都没有时才退回老逻辑（default 平台私聊 → 素材池）。
+
+群聊里别人说的话、模型没回复的消息不在 AstrBot 对话历史里，所以不会被读到。
+
 ## 与 gpt_image 的配合（想用「配模型画的图」才需要）
 
 「配模型自己画的图」这条来源，依赖配套的 gpt_image fork：[monieckbo-svg/astrbot_plugin_gpt_image](https://github.com/monieckbo-svg/astrbot_plugin_gpt_image)。它在 `last_image_url` 里记录每次画图的链接和**时间戳**，qzone 按 `session_id` 对齐取用、按时间戳参与「最新优先」比较。

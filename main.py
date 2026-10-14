@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.6.0",
+    "1.7.0",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -43,6 +43,8 @@ class AstraQzonePlugin(Star):
         self._img_buffer: dict[str, list] = {}
         self._IMG_TTL = 600   # 图片有效期(秒)，超时视作过期
         self._IMG_KEEP = 8    # 每个会话最多留几张
+        # monitor 还没起来时先记在这，启动后交接给 monitor（会话 -> 最后说话时间）
+        self._pending_sessions: dict[str, float] = {}
 
     @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
     async def _capture_client(self, event: AiocqhttpMessageEvent):
@@ -54,14 +56,27 @@ class AstraQzonePlugin(Star):
                 self._booted = True
                 asyncio.create_task(self._boot())
 
-    @filter.platform_adapter_type(filter.PlatformAdapterType.AIOCQHTTP)
-    async def _track_activity(self, event: AiocqhttpMessageEvent):
-        """记录消息活动，用于对话冷却触发。只认宝宝本人的消息——
+    def _is_user(self, sender_id) -> bool:
+        """是不是宝宝本人：QQ号，或者配置里登记的其它平台账号（比如 Discord）。"""
+        ids = {str(self.config.get("user_qq", "")).strip()}
+        extra = self.config.get("user_other_ids", "") or ""
+        ids.update(x.strip() for x in str(extra).split(",") if x.strip())
+        ids.discard("")
+        return str(sender_id) in ids
+
+    @filter.event_message_type(filter.EventMessageType.ALL)
+    async def _track_activity(self, event: AstrMessageEvent):
+        """记录消息活动：用于对话冷却触发，也记下宝宝刚在哪个会话里说话，
+        发说说时去翻那个会话的对话当上下文。只认宝宝本人的消息——
         群里别人刷屏不该重置'我们聊完了吗'的计时器。"""
-        if str(event.get_sender_id()) != str(self.config.get("user_qq", "")):
+        if not self._is_user(event.get_sender_id()):
             return
+        umo = event.unified_msg_origin
         if self.monitor:
             self.monitor.on_message()
+            self.monitor.note_session(umo)
+        else:
+            self._pending_sessions[umo] = time.time()
 
     _IMG_URL_RE = re.compile(
         r'https?://[^\s)\]<>"\']+?\.(?:png|jpe?g|gif|webp)(?:\?[^\s)\]<>"\']*)?', re.I
@@ -217,6 +232,9 @@ class AstraQzonePlugin(Star):
                 user_qq=self.config.get("user_qq", ""),
                 config=dict(self.config),
             )
+            for umo, ts in self._pending_sessions.items():
+                self.monitor.note_session(umo, ts)
+            self._pending_sessions.clear()
             self._task = asyncio.create_task(self.monitor.start())
         except Exception as e:
             logger.error(f"[AstraQzone] 启动失败: {e}")

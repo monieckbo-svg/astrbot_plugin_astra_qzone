@@ -4,6 +4,11 @@
     "type": "string",
     "default": ""
   },
+  "user_other_ids": {
+    "description": "用户在其它平台的账号ID（可选，逗号分隔，比如Discord用户ID）。在这些账号说的话也算用户本人，会被当作发说说的上下文来源",
+    "type": "string",
+    "default": ""
+  },
   "user_name": {
     "description": "用户昵称（用于对话摘要中标注谁说的，留空则显示'用户'）",
     "type": "string",
@@ -18,6 +23,26 @@
     "description": "所在城市（可选，填写后发说说时会注入当前时间和城市，留空则不注入）",
     "type": "string",
     "default": ""
+  },
+  "context_sessions": {
+    "description": "发说说时参考最近活跃的几个会话（私聊/群聊各算一个）",
+    "type": "int",
+    "default": 2
+  },
+  "context_window_hours": {
+    "description": "只参考这么多小时内用户说过话的会话，更早的不算",
+    "type": "int",
+    "default": 12
+  },
+  "context_msg_limit": {
+    "description": "每个会话取最近多少条消息",
+    "type": "int",
+    "default": 20
+  },
+  "context_msg_chars": {
+    "description": "每条消息最多截取多少字",
+    "type": "int",
+    "default": 150
   },
   "material_pool": {
     "description": "素材池（无对话上下文时兜底用，逗号分隔。可以是意象、场景、方向、任何灵感素材）",
