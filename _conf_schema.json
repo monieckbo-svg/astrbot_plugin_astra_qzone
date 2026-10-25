@@ -19,6 +19,11 @@
     "type": "string",
     "default": ""
   },
+  "context_probability": {
+    "description": "自动发说说时结合聊天记录的概率（0.0-1.0）。其余的说说不看对话，写他自己",
+    "type": "float",
+    "default": 0.5
+  },
   "context_sessions": {
     "description": "发说说时参考最近活跃的几个会话（私聊/群聊各算一个）",
     "type": "int",

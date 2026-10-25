@@ -981,10 +981,26 @@ class QzoneMonitor:
 
             await asyncio.sleep(120)
 
-    async def _do_post(self):
-        chat_ctx = await self._get_recent_chat_summary()
-        recent_posts = self._get_recent_posts(8)
+    # 说说的"形状"：真人发空间长短、语气每次都不一样，随机给一个当参考，打破固定模板
+    _POST_SHAPES = (
+        "只有一句话，短一点",
+        "一句话加一个颜文字",
+        "一个没头没尾的问题",
+        "一句吐槽",
+        "半句话，像说到一半懒得说完",
+        "两三句，像随手记一笔",
+    )
+
+    async def _build_post_prompt(self) -> str:
+        """拼发说说的提示词。按 context_probability 决定这条看不看聊天记录：
+        看的那条写对话留下的余味，不复述；不看的那条写他自己。"""
         uname = self.config.get("user_name") or "用户"
+        recent_posts = self._get_recent_posts(8)
+
+        prob = float(self.config.get("context_probability", 0.5))
+        chat_ctx = ""
+        if random.random() < prob:
+            chat_ctx = await self._get_recent_chat_summary()
 
         parts = []
 
@@ -999,17 +1015,23 @@ class QzoneMonitor:
             parts.append(f"现在是{time_str}。")
 
         if chat_ctx:
+            logger.info("[AstraQzone] 这条结合对话写")
             parts.append(f"你和{uname}最近在私聊/群聊里真实发生的对话（最近的会话在前）：\n{chat_ctx}")
             parts.append(
-                "\n从这些对话里挑一个具体的东西当落点：她说过的某句话、一个没聊完的事、"
-                "一个情绪、一个只有今天才有的细节。写出来要让人一看就知道是今天发的，"
-                "而不是哪天都能套用的日常模板（出门、等人回家、睡前黏在一起这类）。"
-                f"不一定要直接写{uname}，可以是被对话勾起来的别的念头。1-3句，像自言自语。"
+                "\n别复述对话里发生了什么——她自己知道，别人看了也只是流水账。"
+                "写它在你身上留下的东西：一个后知后觉的反应、一句当时没说出口的话、"
+                "被它勾起来的别的念头、你打算偷偷去做的一件小事。"
+                "看的人不需要看懂前因后果，像真人发空间那样只露一角就够了。"
             )
         else:
-            # 没读到上下文（没人聊过 / 读取出错）也照常发，写一条普通的
-            logger.info("[AstraQzone] 没读到对话上下文，发一条普通说说")
-            parts.append("写一条说说，1-3句，像自言自语。")
+            logger.info("[AstraQzone] 这条不看对话，写他自己")
+            parts.append(
+                "这条不写今天和她聊过的事。写你自己：此刻在想的、注意到的、"
+                "正在琢磨的一件小事、突然冒出来的念头。"
+                "像一个有自己生活、自己脑子的人随手发的，她出不出现都行。"
+            )
+
+        parts.append(f"这条的形式参考：{random.choice(self._POST_SHAPES)}（只是参考，别硬套）。")
 
         if recent_posts:
             parts.append("\n最近发过的（避免重复相似的内容、句式、意象）：")
@@ -1023,8 +1045,10 @@ class QzoneMonitor:
             "直接写正文本身，绝对不要带昵称、日期、时间戳之类的前缀（那是聊天记录的排版，不是说说的）。"
             "没感觉就只回复「算了」。"
         )
+        return "\n".join(parts)
 
-        prompt = "\n".join(parts)
+    async def _do_post(self):
+        prompt = await self._build_post_prompt()
         content = await self._llm(prompt, "post_persona")
 
         if content is None:
@@ -1059,32 +1083,7 @@ class QzoneMonitor:
 
     async def manual_post(self, content: str = "") -> str:
         if not content:
-            chat_ctx = await self._get_recent_chat_summary()
-            recent_posts = self._get_recent_posts(3)
-
-            parts = []
-            city = self.config.get("city", "")
-            _now = datetime.now(BEIJING)
-            _week = "一二三四五六日"[_now.weekday()]
-            time_str = _now.strftime('%m月%d日') + f"（星期{_week}）" + _now.strftime(' %H:%M')
-            if city:
-                parts.append(f"现在是{time_str}，{city}。")
-            else:
-                parts.append(f"现在是{time_str}。")
-
-            if chat_ctx:
-                parts.append(f"最近的真实对话（最近的会话在前）：\n{chat_ctx}")
-                parts.append("从对话里挑一个具体的细节或情绪当落点写一条说说，别写哪天都能发的日常模板。1-3句。直接输出内容。")
-            else:
-                parts.append("写一条QQ空间说说，1-3句，像真人发的。直接输出内容。")
-
-            if recent_posts:
-                parts.append("最近发过的（别重复）：")
-                for p in recent_posts:
-                    parts.append(f"  - {p[:60]}")
-
-            parts.append(PRIVACY_RULE)
-            content = await self._llm("\n".join(parts), "post_persona")
+            content = await self._llm(await self._build_post_prompt(), "post_persona")
 
             if content is None:
                 return "LLM暂时不可用，等一下再试"
