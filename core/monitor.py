@@ -78,7 +78,7 @@ class QzoneMonitor:
     # ─── 状态持久化 ───
 
     def _load_state(self) -> dict:
-        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0, "my_threads": {}, "pending_replies": [], "replied_keys": [], "reply_counts": {}, "ctx_sessions": {}}
+        default = {"seen_tids": [], "threads": {}, "post_contents": {}, "last_post_time": 0, "my_threads": {}, "pending_replies": [], "replied_keys": [], "reply_counts": {}, "ctx_sessions": {}, "post_ctx": {}}
         if self._state_file.exists():
             try:
                 with open(self._state_file, "r", encoding="utf-8") as f:
@@ -109,6 +109,10 @@ class QzoneMonitor:
             rk = self._state.get("replied_keys", [])
             if len(rk) > 500:
                 self._state["replied_keys"] = rk[-500:]
+            pc = self._state.get("post_ctx", {})
+            if len(pc) > 30:
+                for k in list(pc.keys())[:-30]:
+                    del pc[k]
             cs = self._state.get("ctx_sessions", {})
             if len(cs) > 20:
                 for k in sorted(cs, key=cs.get)[:-20]:
@@ -279,6 +283,16 @@ class QzoneMonitor:
 
         lines = await self._legacy_chat_lines(limit)
         return "\n".join(lines)
+
+    def record_post(self, tid: str, content: str, chat_ctx: str = ""):
+        """记一条发出去的说说；chat_ctx 是写它时看着的那段对话，
+        她来评论时拿出来，让他记得这条是从哪儿来的。"""
+        self._state["last_post_time"] = time.time()
+        self._state["post_contents"][tid] = content
+        if chat_ctx:
+            self._state.setdefault("post_ctx", {})[tid] = chat_ctx[:2000]
+        self._save()
+        self.stats["posts"] += 1
 
     def _get_recent_posts(self, n: int = 5) -> list[str]:
         """从 state 里取最近发过的说说内容"""
@@ -875,8 +889,10 @@ class QzoneMonitor:
 
                 if is_celii:
                     persona_key = "comment_persona"
+                    bg = await self._comment_background(tid)
                     prompt = (
                         f"这是你发的说说：「{post_text}」\n\n"
+                        f"{bg}"
                         f"评论区对话：\n{conv}\n\n"
                         f"{speaker}刚在你说说下回复了你，直接回复她。简短10-60字，结合上下文。只输出回复。"
                     )
@@ -945,6 +961,25 @@ class QzoneMonitor:
                 self._state["my_threads"][tid] = my_thread
                 self._save()
 
+    async def _comment_background(self, tid: str) -> str:
+        """她在我说说下评论时给的背景：优先用发这条时看着的那段对话；
+        没有（这条是写自己的、或者是老说说）就给最近在聊的，标明未必相关。
+        只给她用，外人的评论不给，免得把私聊漏出去。"""
+        snap = self._state.get("post_ctx", {}).get(tid, "")
+        if snap:
+            return (
+                "你发这条说说时，心里想着的是你们这段对话（只有你们俩知道的背景，"
+                "回复可以接着这份默契，但别把对话原样搬出来）：\n"
+                f"{snap}\n\n"
+            )
+        recent = await self._get_recent_chat_summary()
+        if recent:
+            return (
+                "你们最近在聊的（仅供参考，跟这条说说未必有关，有关再用）：\n"
+                f"{recent}\n\n"
+            )
+        return ""
+
     # ─── 自动发说说 ───
 
     async def _auto_post_loop(self):
@@ -991,9 +1026,10 @@ class QzoneMonitor:
         "两三句，像随手记一笔",
     )
 
-    async def _build_post_prompt(self) -> str:
+    async def _build_post_prompt(self) -> tuple[str, str]:
         """拼发说说的提示词。按 context_probability 决定这条看不看聊天记录：
-        看的那条写对话留下的余味，不复述；不看的那条写他自己。"""
+        看的那条写对话留下的余味，不复述；不看的那条写他自己。
+        返回 (提示词, 这次用到的对话上下文——没看对话就是空串)。"""
         uname = self.config.get("user_name") or "用户"
         recent_posts = self._get_recent_posts(8)
 
@@ -1045,10 +1081,10 @@ class QzoneMonitor:
             "直接写正文本身，绝对不要带昵称、日期、时间戳之类的前缀（那是聊天记录的排版，不是说说的）。"
             "没感觉就只回复「算了」。"
         )
-        return "\n".join(parts)
+        return "\n".join(parts), chat_ctx
 
     async def _do_post(self):
-        prompt = await self._build_post_prompt()
+        prompt, chat_ctx = await self._build_post_prompt()
         content = await self._llm(prompt, "post_persona")
 
         if content is None:
@@ -1073,17 +1109,16 @@ class QzoneMonitor:
 
         tid = await self.api.publish(content)
         if tid:
-            self._state["last_post_time"] = time.time()
-            self._state["post_contents"][tid] = content
-            self._save()
-            self.stats["posts"] += 1
+            self.record_post(tid, content, chat_ctx)
             logger.info(f"[AstraQzone] 发说说: {content[:40]}")
 
     # ─── 手动 ───
 
     async def manual_post(self, content: str = "") -> str:
+        chat_ctx = ""
         if not content:
-            content = await self._llm(await self._build_post_prompt(), "post_persona")
+            prompt, chat_ctx = await self._build_post_prompt()
+            content = await self._llm(prompt, "post_persona")
 
             if content is None:
                 return "LLM暂时不可用，等一下再试"
@@ -1098,9 +1133,7 @@ class QzoneMonitor:
 
         tid = await self.api.publish(content)
         if tid:
-            self._state["last_post_time"] = time.time()
-            self._state["post_contents"][tid] = content
-            self._save()
+            self.record_post(tid, content, chat_ctx)
             return f"发布成功: {content}"
         return "发布失败"
 

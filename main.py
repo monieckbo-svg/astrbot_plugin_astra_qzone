@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor, private_hit
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.8.0",
+    "1.8.1",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -308,10 +308,10 @@ class AstraQzonePlugin(Star):
         tid = await self.api.publish(content, images=images)
         if tid:
             if self.monitor:
-                self.monitor._state["last_post_time"] = time.time()
-                self.monitor._state["post_contents"][tid] = content
-                self.monitor._save()
-                self.monitor.stats["posts"] += 1
+                # 聊天里当场发的：把这个会话最近的对话存下来，她来评论时他记得前因
+                limit = int(self.config.get("context_msg_limit", 20) or 20)
+                lines = await self.monitor._read_session_history(event.unified_msg_origin, limit)
+                self.monitor.record_post(tid, content, "\n".join(lines))
             tag = "（带图）" if images else ""
             logger.info(f"[AstraQzone] 说说发布成功{tag}: {content[:40]}")
             yield event.plain_result(f"说说发布成功{tag}: {content}")
