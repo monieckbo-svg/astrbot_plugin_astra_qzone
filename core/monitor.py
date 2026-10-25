@@ -21,6 +21,37 @@ from .qzone.api import QzoneAPI
 from .qzone.session import QzoneSession
 
 
+# 钱数：¥99 / 99元 / 两百块 / 3.5k / 1w …
+_MONEY_RE = re.compile(
+    r"[¥￥$]\s*\d|"
+    r"\d[\d.,]*\s*(?:块|元|毛|刀|rmb|RMB|万|[wWkK](?![a-zA-Z]))|"
+    r"[零一二两三四五六七八九十百千万]+\s*(?:块钱|元钱?|毛钱)|"
+    r"[零一二两三四五六七八九]*[十百千万][零一二两三四五六七八九十百千万]*\s*块(?!儿)"
+)
+DEFAULT_PRIVATE_KEYWORDS = "花了,花掉,余额,存款,工资,账单,多少钱,剩多少,还剩,买了,下单,剁手,付款,转账,价格,退款"
+
+
+def private_hit(text: str, config: dict) -> str:
+    """说说/对话里有没有碰到宝宝的钱和消费隐私。命中返回命中的片段，否则空串。"""
+    if not text:
+        return ""
+    m = _MONEY_RE.search(text)
+    if m:
+        return m.group(0)
+    kws = config.get("private_keywords", DEFAULT_PRIVATE_KEYWORDS)
+    for kw in str(kws or "").split(","):
+        kw = kw.strip()
+        if kw and kw in text:
+            return kw
+    return ""
+
+
+PRIVACY_RULE = (
+    "她的钱是她的隐私：买了什么、花了多少、价格、余额、还剩多少钱、工资账单这类，"
+    "说说里一个字都不许提，也不许暗示。"
+)
+
+
 class QzoneMonitor:
 
     _SKIP_WORDS = {"算了", "不想", "没有", "没什么", "不", "pass",
@@ -173,6 +204,8 @@ class QzoneMonitor:
                 text = str(text)
             text = re.sub(r"\s+", " ", text).strip()
             if text and len(text) > 1:
+                if private_hit(text, self.config):
+                    continue  # 聊到钱的那条整句不给模型看
                 name = uname if role == "user" else bname
                 lines.append(f"{name}: {text[:max_chars]}")
         return lines[-limit:]
@@ -983,6 +1016,7 @@ class QzoneMonitor:
             for i, p in enumerate(recent_posts, 1):
                 parts.append(f"  {i}. {p[:80]}")
 
+        parts.append("\n" + PRIVACY_RULE)
         parts.append(
             "\n有想说的话吗？"
             "有就直接写说说内容（1-3句）。"
@@ -1007,6 +1041,11 @@ class QzoneMonitor:
         if cleaned and cleaned != content.strip():
             logger.info(f"[AstraQzone] 剥掉聊天记录式前缀: {content[:30]!r} -> {cleaned[:30]!r}")
             content = cleaned
+
+        hit = private_hit(content, self.config)
+        if hit:
+            logger.info(f"[AstraQzone] 说说碰到钱的隐私（{hit}），这轮不发: {content[:40]}")
+            return
 
         tid = await self.api.publish(content)
         if tid:
@@ -1044,6 +1083,7 @@ class QzoneMonitor:
                 for p in recent_posts:
                     parts.append(f"  - {p[:60]}")
 
+            parts.append(PRIVACY_RULE)
             content = await self._llm("\n".join(parts), "post_persona")
 
             if content is None:
@@ -1051,6 +1091,11 @@ class QzoneMonitor:
 
             if self._should_skip(content):
                 return "没什么想说的，这次不发了"
+
+            hit = private_hit(content, self.config)
+            if hit:
+                logger.info(f"[AstraQzone] 说说碰到钱的隐私（{hit}），不发: {content[:40]}")
+                return f"这条提到了钱（{hit}），没发：{content}"
 
         tid = await self.api.publish(content)
         if tid:

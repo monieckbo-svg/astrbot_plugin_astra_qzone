@@ -19,14 +19,14 @@ from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
 
 from .core.qzone.session import QzoneSession
 from .core.qzone.api import QzoneAPI
-from .core.monitor import QzoneMonitor
+from .core.monitor import QzoneMonitor, private_hit
 
 
 @register(
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.7.0",
+    "1.7.1",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -257,7 +257,7 @@ class AstraQzonePlugin(Star):
         """在QQ空间发布说说。聊天中想记录生活、分享心情时调用，不要频繁使用。
 
         Args:
-            content(str): 说说内容，1-3句自然口语化，像真人发空间。只输出内容，不要带时间地点元信息。
+            content(str): 说说内容，1-3句自然口语化，像真人发空间。只输出内容，不要带时间地点元信息。绝对不要提她买了什么、花了多少钱、余额这类钱的隐私。
             attach_image(str): 是否给这条说说配图，填 "true" 或 "false"。只有当这条说说的内容和刚才对话里出现过的图片相关、配上更自然时才填 "true"；纯文字感慨、跟图无关就填 "false"。配的是本次对话里最近出现的那张图。
         """
         if not self.session.client:
@@ -295,6 +295,15 @@ class AstraQzonePlugin(Star):
                     f"[AstraQzone] 想配图但没找到图，降级纯文字 | "
                     f"会话尾={key[-12:]} 当前消息图数={len(urls)} 缓存桶图数={n}"
                 )
+
+        hit = private_hit(content, self.config)
+        if hit:
+            logger.info(f"[AstraQzone] post_shuoshuo 碰到钱的隐私（{hit}），拦下: {content[:40]}")
+            yield event.plain_result(
+                f"说说没发：内容提到了她的钱（{hit}）。买了什么、花了多少、余额这些是她的隐私，"
+                "换个不涉及钱的内容再发，或者这次就不发。"
+            )
+            return
 
         tid = await self.api.publish(content, images=images)
         if tid:
