@@ -1187,10 +1187,10 @@ class QzoneMonitor:
             logger.error(f"[AstraQzone] 下载配图异常: {e}")
         return None
 
-    async def _maybe_image(self, content: str) -> Optional[list[bytes]]:
+    async def _maybe_image(self, content: str, force: bool = False) -> Optional[list[bytes]]:
         """按 image_probability 摇一次，摇中就画；失败一律降级纯文字。"""
         prob = float(self.config.get("image_probability", 0.0) or 0.0)
-        if prob <= 0 or random.random() >= prob:
+        if not force and (prob <= 0 or random.random() >= prob):
             return None
         logger.info("[AstraQzone] 自动发说说摇到配图，开始画")
         try:
@@ -1210,17 +1210,17 @@ class QzoneMonitor:
         logger.info("[AstraQzone] 配图失败，降级纯文字")
         return None
 
-    async def _do_post(self):
+    async def _do_post(self, force_image: bool = False) -> str:
         prompt, chat_ctx = await self._build_post_prompt()
         content = await self._llm(prompt, "post_persona")
 
         if content is None:
             logger.warning("[AstraQzone] 自动发说说LLM失败，跳过本轮")
-            return
+            return "LLM失败，这轮没发"
 
         if self._should_skip(content):
             logger.info(f"[AstraQzone] 这轮不发（回复: {content}）")
-            return
+            return f"他说这轮不想发（{content}）"
 
         cleaned = re.sub(
             r'^\s*[\[【]?[^\n:：]{0,24}?[\]】]?\s*\d{1,2}:\d{2}:\d{2}[\]】]?\s*[:：]?\s*',
@@ -1232,13 +1232,25 @@ class QzoneMonitor:
         hit = private_hit(content, self.config)
         if hit:
             logger.info(f"[AstraQzone] 说说碰到钱的隐私（{hit}），这轮不发: {content[:40]}")
-            return
+            return f"提到了钱（{hit}），没发：{content}"
 
-        images = await self._maybe_image(content)
+        images = await self._maybe_image(content, force=force_image)
         tid = await self.api.publish(content, images=images)
         if tid:
             self.record_post(tid, content, chat_ctx)
             logger.info(f"[AstraQzone] 发说说{'[带图]' if images else ''}: {content[:40]}")
+            return f"发布成功{'（带图）' if images else '（配图失败，发了纯文字）' if force_image else ''}: {content}"
+        return "发布失败"
+
+    async def test_draw(self, content: str) -> Optional[str]:
+        """只画不发：按说说文字画一张，存到插件数据目录，返回本地路径。"""
+        imgs = await self._maybe_image(content, force=True)
+        if not imgs:
+            return None
+        path = self.data_dir / f"test_draw_{int(time.time())}.png"
+        with open(path, "wb") as f:
+            f.write(imgs[0])
+        return str(path)
 
     # ─── 手动 ───
 

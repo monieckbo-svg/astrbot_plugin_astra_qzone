@@ -26,7 +26,7 @@ from .core.monitor import QzoneMonitor, private_hit
     "astra_qzone",
     "Celii & Astra",
     "Astra的QQ空间 - 秒评/评论区对话/转发概率评论/点赞/发说说（自动获取cookies）",
-    "1.9.3",
+    "1.9.4",
 )
 class AstraQzonePlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
@@ -323,7 +323,7 @@ class AstraQzonePlugin(Star):
 
     @filter.command("aqz")
     async def cmd(self, event: AiocqhttpMessageEvent, sub: str = "status"):
-        '''Astra的QQ空间 /aqz [status|post|say|restart]'''
+        '''Astra的QQ空间 /aqz [status|post|pic|draw|say|restart]'''
 
         if sub == "status":
             yield event.plain_result(
@@ -335,6 +335,32 @@ class AstraQzonePlugin(Star):
                 yield event.plain_result("[AstraQzone] 未启动")
                 return
             yield event.plain_result(await self.monitor.manual_post())
+
+        elif sub == "pic":
+            if not self.monitor:
+                yield event.plain_result("[AstraQzone] 未启动")
+                return
+            yield event.plain_result("开始走一遍自动发说说（必配图），画图要等一两分钟…")
+            yield event.plain_result(await self.monitor._do_post(force_image=True))
+
+        elif sub == "draw":
+            if not self.monitor:
+                yield event.plain_result("[AstraQzone] 未启动")
+                return
+            txt = event.message_str
+            for p in ["/aqz draw ", "/aqz draw"]:
+                if txt.startswith(p):
+                    txt = txt[len(p):].strip()
+                    break
+            if not txt:
+                yield event.plain_result("用法：/aqz draw <一句说说>，只画图发回来看，不发空间")
+                return
+            yield event.plain_result("在画了，一两分钟…")
+            path = await self.monitor.test_draw(txt)
+            if path:
+                yield event.image_result(path)
+            else:
+                yield event.plain_result("没画出来，看下日志里 [AstraQzone] 和 GPT Image 那几行")
 
         elif sub.startswith("say"):
             if not self.monitor:
@@ -368,6 +394,8 @@ class AstraQzonePlugin(Star):
                 "[Astra的QQ空间]\n"
                 "/aqz status - 状态\n"
                 "/aqz post - AI发说说\n"
+                "/aqz pic - 走一遍自动发说说，必配图\n"
+                "/aqz draw <说说> - 只画图发回来看，不发空间\n"
                 "/aqz say <内容> - 手动发说说\n"
                 "/aqz restart - 重启"
             )
