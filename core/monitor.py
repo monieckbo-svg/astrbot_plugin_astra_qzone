@@ -1187,6 +1187,28 @@ class QzoneMonitor:
             logger.error(f"[AstraQzone] 下载配图异常: {e}")
         return None
 
+    @staticmethod
+    def _shrink_image(data: bytes, max_side: int = 1600, quality: int = 90) -> bytes:
+        """画出来的 2k PNG 有好几 MB，QQ空间图床 base64 上传容易超时被拒；转成 JPEG 再传。"""
+        try:
+            import io
+            from PIL import Image
+            im = Image.open(io.BytesIO(data))
+            if im.mode not in ("RGB", "L"):
+                bg = Image.new("RGB", im.size, (255, 255, 255))
+                bg.paste(im, mask=im.convert("RGBA").split()[-1])
+                im = bg
+            im.thumbnail((max_side, max_side))
+            out = io.BytesIO()
+            im.convert("RGB").save(out, "JPEG", quality=quality, optimize=True)
+            small = out.getvalue()
+            if len(small) < len(data):
+                logger.info(f"[AstraQzone] 配图压缩 {len(data)//1024}KB -> {len(small)//1024}KB")
+                return small
+        except Exception as e:
+            logger.info(f"[AstraQzone] 配图压缩跳过: {e}")
+        return data
+
     async def _maybe_image(self, content: str, force: bool = False) -> Optional[list[bytes]]:
         """按 image_probability 摇一次，摇中就画；失败一律降级纯文字。"""
         prob = float(self.config.get("image_probability", 0.0) or 0.0)
@@ -1205,6 +1227,7 @@ class QzoneMonitor:
             logger.warning(f"[AstraQzone] 配图异常: {e}，降级纯文字")
             return None
         if img:
+            img = self._shrink_image(img)
             logger.info(f"[AstraQzone] 配图成功 ({len(img)} bytes)")
             return [img]
         logger.info("[AstraQzone] 配图失败，降级纯文字")
@@ -1247,7 +1270,7 @@ class QzoneMonitor:
         imgs = await self._maybe_image(content, force=True)
         if not imgs:
             return None
-        path = self.data_dir / f"test_draw_{int(time.time())}.png"
+        path = self.data_dir / f"test_draw_{int(time.time())}.jpg"
         with open(path, "wb") as f:
             f.write(imgs[0])
         return str(path)
