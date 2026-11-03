@@ -1,7 +1,6 @@
 """后台监控器 - 单循环，一次API请求同时处理新说说和评论回复"""
 
 import asyncio
-import base64
 import json
 import os
 import random
@@ -1089,59 +1088,45 @@ class QzoneMonitor:
 
     # ─── 自动发说说配图 ───
 
-    _IMG_CFG_PATHS = (
-        "/AstrBot/data/config/astrbot_plugin_gpt_image_config.json",  # docker 镜像
-        "data/config/astrbot_plugin_gpt_image_config.json",           # 源码版（工作目录相对）
-        "/root/data/config/astrbot_plugin_gpt_image_config.json",
-    )
-
-    def _get_image_api_config(self) -> Optional[dict]:
-        """借 gpt_image 插件的画图 API 配置：先问运行中的插件实例，拿不到再读它的配置文件。"""
+    def _gpt_image_inst(self):
+        """拿运行中的 gpt_image 插件实例（我们的 fork：四顺位提供商轮询那版）。"""
         try:
             meta = self.context.get_registered_star("astrbot_plugin_gpt_image")
             inst = (getattr(meta, "star_cls", None) or getattr(meta, "instance", None)) if meta else None
-            cfg = getattr(inst, "config", None) if inst else None
-            if cfg and cfg.get("api_key") and cfg.get("api_base"):
-                return dict(cfg)
+            if inst and hasattr(inst, "_call_image_api"):
+                return inst
         except Exception as e:
-            logger.info(f"[AstraQzone] 从 gpt_image 实例取配置失败: {e}")
-        for path in self._IMG_CFG_PATHS:
-            if not os.path.exists(path):
-                continue
-            try:
-                with open(path, "r", encoding="utf-8-sig") as f:
-                    cfg = json.load(f)
-                if cfg.get("api_key") and cfg.get("api_base"):
-                    return cfg
-            except Exception as e:
-                logger.warning(f"[AstraQzone] 读画图配置 {path} 失败: {e}")
-        logger.warning("[AstraQzone] 没找到可用的 gpt_image 画图配置（api_key/api_base），跳过配图")
+            logger.info(f"[AstraQzone] 取 gpt_image 实例失败: {e}")
+        logger.warning("[AstraQzone] gpt_image 插件没装/没启用，跳过配图")
         return None
 
-    async def _download_image(self, url: str) -> Optional[bytes]:
-        try:
-            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
-                async with s.get(url, headers=headers) as r:
-                    if r.status == 200:
-                        return await r.read()
-                    logger.warning(f"[AstraQzone] 下载配图 HTTP {r.status}: {url[:80]}")
-        except Exception as e:
-            logger.error(f"[AstraQzone] 下载配图异常: {e}")
-        return None
+    async def _gpt_image_providers(self, inst) -> list:
+        """照 gpt_image 自己的顺位规则取提供商 [(顺位, id, provider)]；
+        后台发说说没有 event，全不可用时回退 qzone 当前在用的提供商。"""
+        result = []
+        for order, pid in enumerate(getattr(inst, "image_provider_ids", []) or [], 1):
+            try:
+                prov = await self.context.provider_manager.get_provider_by_id(pid)
+                if prov:
+                    result.append((order, pid, prov))
+                else:
+                    logger.warning(f"[AstraQzone] gpt_image 第{order}顺位 [{pid}] 找不到，跳过")
+            except Exception as e:
+                logger.warning(f"[AstraQzone] gpt_image 第{order}顺位 [{pid}] 获取失败: {e}")
+        if not result:
+            prov = self.context.get_using_provider()
+            if prov:
+                result.append((1, "当前默认", prov))
+        return result
 
     async def _generate_image_for_post(self, post_content: str) -> Optional[bytes]:
-        """按说说内容现画一张配图，返回图片字节；任一步失败返回 None（调用方降级纯文字）。"""
-        img_cfg = self._get_image_api_config()
-        if not img_cfg:
+        """按说说内容现画一张配图，直接调 gpt_image 的画图流程（顺位轮询/尺寸/下载重试都复用它的）。
+        任一步失败返回 None，调用方降级纯文字。"""
+        inst = self._gpt_image_inst()
+        if not inst:
             return None
 
-        api_key = img_cfg["api_key"]
-        api_base = str(img_cfg["api_base"]).rstrip("/")
-        model = img_cfg.get("model") or "gpt-image-2"
-        api_format = img_cfg.get("api_format") or "images"
         style = (self.config.get("image_style") or "").strip()
-
         ask = (
             "Based on this social media post, write a short English image generation prompt.\n"
             f"Post: '{post_content}'\n"
@@ -1156,46 +1141,31 @@ class QzoneMonitor:
             return None
         logger.info(f"[AstraQzone] 画图 prompt: {image_prompt[:120]}")
 
-        timeout_val = self.config.get("image_timeout", 150)
-        hdrs = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=timeout_val)) as s:
-                if api_format == "chat":
-                    payload = {"model": model, "messages": [{"role": "user", "content": image_prompt}]}
-                    async with s.post(f"{api_base}/chat/completions", json=payload, headers=hdrs) as r:
-                        if r.status != 200:
-                            logger.warning(f"[AstraQzone] 画图 API 失败 ({r.status}): {(await r.text())[:200]}")
-                            return None
-                        data = await r.json(content_type=None)
-                    text = (data.get("choices") or [{}])[0].get("message", {}).get("content", "") or ""
-                    m = re.search(r"data:image/[a-z]+;base64,([A-Za-z0-9+/=]+)", text)
-                    if m:
-                        return base64.b64decode(m.group(1))
-                    for pat in (r"!\[.*?\]\((https?://[^\s\)]+)\)",
-                                r"(https?://[^\s\)\"]+\.(?:png|jpg|jpeg|webp|gif))"):
-                        m = re.search(pat, text)
-                        if m:
-                            return await self._download_image(m.group(1))
-                    logger.warning("[AstraQzone] 画图返回里没找到图片")
-                    return None
-                else:
-                    payload = {"model": model, "prompt": image_prompt, "n": 1, "size": "1024x1024"}
-                    async with s.post(f"{api_base}/images/generations", json=payload, headers=hdrs) as r:
-                        if r.status != 200:
-                            logger.warning(f"[AstraQzone] 画图 API 失败 ({r.status}): {(await r.text())[:200]}")
-                            return None
-                        data = await r.json(content_type=None)
-                    item = (data.get("data") or [{}])[0]
-                    if item.get("b64_json"):
-                        return base64.b64decode(item["b64_json"])
-                    if item.get("url"):
-                        return await self._download_image(item["url"])
-                    logger.warning("[AstraQzone] 画图返回里没有 b64_json/url")
-                    return None
-        except asyncio.TimeoutError:
-            logger.warning(f"[AstraQzone] 画图超时 ({timeout_val}s)")
+            providers = await self._gpt_image_providers(inst)
+            result = await inst._call_image_api(providers, image_prompt)
+            if not result:
+                return None
+            path = result if os.path.isfile(result) else await inst._download_image(result, "qzone_autopost")
+            if path and os.path.isfile(path):
+                with open(path, "rb") as f:
+                    return f.read()
+            if str(result).startswith("http"):
+                return await self._download_image(result)
         except Exception as e:
-            logger.error(f"[AstraQzone] 画图异常: {e}")
+            logger.error(f"[AstraQzone] 调 gpt_image 画图异常: {e}")
+        return None
+
+    async def _download_image(self, url: str) -> Optional[bytes]:
+        try:
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60)) as s:
+                async with s.get(url, headers=headers) as r:
+                    if r.status == 200:
+                        return await r.read()
+                    logger.warning(f"[AstraQzone] 下载配图 HTTP {r.status}: {url[:80]}")
+        except Exception as e:
+            logger.error(f"[AstraQzone] 下载配图异常: {e}")
         return None
 
     async def _maybe_image(self, content: str) -> Optional[list[bytes]]:
@@ -1207,7 +1177,7 @@ class QzoneMonitor:
         try:
             img = await asyncio.wait_for(
                 self._generate_image_for_post(content),
-                timeout=self.config.get("image_timeout", 150) + 20,
+                timeout=self.config.get("image_timeout", 400),
             )
         except asyncio.TimeoutError:
             logger.warning("[AstraQzone] 配图整体超时，降级纯文字")
