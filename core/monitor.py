@@ -885,6 +885,7 @@ class QzoneMonitor:
                 ))
 
                 post_text = (post.get("content") or "").strip()
+                img_hint, img_urls = self._post_image_hint(tid, post)
                 conv = "\n".join(
                     f"{'我' if e.get('role') == 'astra' else e.get('name', uname)}: {e['content']}"
                     for e in my_thread
@@ -895,6 +896,7 @@ class QzoneMonitor:
                     bg = await self._comment_background(tid)
                     prompt = (
                         f"这是你发的说说：「{post_text}」\n\n"
+                        f"{img_hint}"
                         f"{bg}"
                         f"评论区对话：\n{conv}\n\n"
                         f"{speaker}刚在你说说下回复了你，直接回复她。简短10-60字，结合上下文。只输出回复。"
@@ -905,13 +907,17 @@ class QzoneMonitor:
                                    else "comment_persona")
                     prompt = (
                         f"这是你发的说说：「{post_text}」\n\n"
+                        f"{img_hint}"
                         f"评论区对话：\n{conv}\n\n"
                         f"刚刚评论你的是「{speaker}」，是你的朋友/熟人，不是你最亲近的人。"
                         f"礼貌自然地回复对方，可以稍微带点距离，别太黏腻，也别透露太私人的事。"
                         f"正常使用标点符号断句。简短10-60字，结合上下文。只输出回复。"
                     )
 
-                reply = await self._llm(prompt, persona_key)
+                reply = await self._llm(prompt, persona_key, image_urls=img_urls[:2] or None)
+                if reply is None and img_urls:
+                    # 图片链接模型拉不到时退回只看文字说明
+                    reply = await self._llm(prompt, persona_key)
 
                 if reply is None:
                     logger.warning(f"[AstraQzone] LLM回复失败，标记待重试 tid={tid} 对象={speaker}")
@@ -963,6 +969,69 @@ class QzoneMonitor:
                 self._state["my_threads"].pop(tid, None)
                 self._state["my_threads"][tid] = my_thread
                 self._save()
+
+    def _her_private_umo(self) -> str:
+        """找她在 QQ 私聊的会话（发说说上下文的账本里记着），取最近活跃那个。"""
+        tail = f":FriendMessage:{self.user_qq}"
+        sess = self._state.get("ctx_sessions", {})
+        cands = [(ts, u) for u, ts in sess.items() if u.endswith(tail)]
+        return max(cands)[1] if cands else ""
+
+    async def _after_image_post(self, tid: str, content: str):
+        """带图说说发出去后：原图存一份、记下图里画了什么（她评论时他看得到），再私聊发她原图。"""
+        raw = getattr(self, "_last_raw_image", None)
+        scene = getattr(self, "_last_scene", "")
+        path = ""
+        if raw:
+            try:
+                d = self.data_dir / "post_images"
+                d.mkdir(parents=True, exist_ok=True)
+                path = str(d / f"{tid}.png")
+                with open(path, "wb") as f:
+                    f.write(raw)
+                # 只留最近 30 张原图
+                olds = sorted(d.glob("*.png"), key=lambda x: x.stat().st_mtime)
+                for x in olds[:-30]:
+                    x.unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning(f"[AstraQzone] 保存原图失败: {e}")
+                path = ""
+        pi = self._state.setdefault("post_images", {})
+        pi[tid] = {"scene": scene[:800], "file": path}
+        for k in list(pi.keys())[:-50]:
+            pi.pop(k, None)
+        self._save()
+
+        if not path or not self.config.get("image_send_to_user", True):
+            return
+        umo = self._her_private_umo()
+        if not umo:
+            logger.info("[AstraQzone] 没找到她的QQ私聊会话，原图没私发（她先私聊发一句就有了）")
+            return
+        try:
+            from astrbot.api.event import MessageChain
+            import astrbot.api.message_components as Comp
+            chain = [Comp.Plain(f"空间刚发的这条，原图给你：{content}"), Comp.Image.fromFileSystem(path)]
+            await self.context.send_message(umo, MessageChain(chain=chain))
+            logger.info(f"[AstraQzone] 原图已私发给她 umo={umo}")
+        except Exception as e:
+            logger.warning(f"[AstraQzone] 私发原图失败: {e}")
+
+    def _post_image_hint(self, tid: str, post: dict) -> tuple[str, list[str]]:
+        """自己说说的配图：返回 (给模型的文字说明, 图片链接)，评论时让他知道图里是什么。"""
+        urls = []
+        for img in (post.get("pic") or []):
+            for key in ("url2", "url3", "url1", "smallurl"):
+                if u := img.get(key):
+                    urls.append(u)
+                    break
+        info = self._state.get("post_images", {}).get(tid) or {}
+        hint = ""
+        if info.get("scene"):
+            hint = f"这条说说你配了一张自己画的图，画的是：{info['scene']}\n\n"
+        elif urls:
+            hint = f"这条说说配了{len(urls)}张图。\n\n"
+        return hint, urls
 
     async def _comment_background(self, tid: str) -> str:
         """她在我说说下评论时给的背景：优先用发这条时看着的那段对话；
@@ -1154,6 +1223,7 @@ class QzoneMonitor:
         if not image_prompt or len(image_prompt) < 10 or self._should_skip(image_prompt):
             logger.info(f"[AstraQzone] 画图 prompt 生成失败，跳过配图（{image_prompt!r}）")
             return None
+        self._last_scene = image_prompt  # 只存画面描述，评论时告诉他图里画了什么
         # 画风原文一字不改拼在最后，不交给模型转述，防止被缩写走样
         if style:
             image_prompt = f"{image_prompt}\n\nArt style: {style}"
@@ -1211,6 +1281,8 @@ class QzoneMonitor:
 
     async def _maybe_image(self, content: str, force: bool = False) -> Optional[list[bytes]]:
         """按 image_probability 摇一次，摇中就画；失败一律降级纯文字。"""
+        self._last_raw_image = None
+        self._last_scene = ""
         prob = float(self.config.get("image_probability", 0.0) or 0.0)
         if not force and (prob <= 0 or random.random() >= prob):
             return None
@@ -1227,6 +1299,7 @@ class QzoneMonitor:
             logger.warning(f"[AstraQzone] 配图异常: {e}，降级纯文字")
             return None
         if img:
+            self._last_raw_image = img
             img = self._shrink_image(img)
             logger.info(f"[AstraQzone] 配图成功 ({len(img)} bytes)")
             return [img]
@@ -1262,6 +1335,8 @@ class QzoneMonitor:
         if tid:
             self.record_post(tid, content, chat_ctx)
             logger.info(f"[AstraQzone] 发说说{'[带图]' if images else ''}: {content[:40]}")
+            if images:
+                await self._after_image_post(tid, content)
             return f"发布成功{'（带图）' if images else '（配图失败，发了纯文字）' if force_image else ''}: {content}"
         return "发布失败"
 

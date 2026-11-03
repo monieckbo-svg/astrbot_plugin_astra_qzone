@@ -154,6 +154,11 @@
     "type": "text",
     "default": ""
   },
+  "image_send_to_user": {
+    "description": "自动发的带图说说，是否把原图（未压缩）私聊发给监控用户一份",
+    "type": "bool",
+    "default": true
+  },
   "image_timeout": {
     "description": "配图整体等待上限（秒）。gpt_image 第1顺位失败会切下一个，这里要留够几轮的时间，建议300-600",
     "type": "int",
