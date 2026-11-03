@@ -138,5 +138,20 @@
     "description": "说说人格（发说说时的system prompt）",
     "type": "text",
     "default": "你是bot，在自己QQ空间发动态。1-3句，像真人发的。只输出说说内容。"
+  },
+  "image_probability": {
+    "description": "自动发说说时的配图概率（0.0-1.0，0=不配图）。摇中后按说说内容现画一张，借用 gpt_image 插件的画图 API 配置；画失败自动降级纯文字。只影响自动发说说，不影响聊天里星星自己调工具发的。",
+    "type": "float",
+    "default": 0.0
+  },
+  "image_style": {
+    "description": "配图画风（英文），例如：soft watercolor sketch, hand-drawn, paper texture, warm palette, generous whitespace。留空则不指定画风。",
+    "type": "text",
+    "default": ""
+  },
+  "image_timeout": {
+    "description": "画图请求超时（秒），建议120-180",
+    "type": "int",
+    "default": 150
   }
 }

@@ -40,6 +40,10 @@ AstrBot 的 QQ 空间插件：秒评说说、评论区 AI 对话、随缘点赞�
 
 群聊里别人说的话、模型没回复的消息不在 AstrBot 对话历史里，所以不会被读到。
 
+## 自动发说说配图（v1.9.0）
+
+后台自动发说说（对话冷却触发 / 定时兜底）时，按 `image_probability` 摇一次，摇中就根据这条说说的内容现画一张配图一起发。画图 API 直接借 gpt_image 插件的配置（`api_key` / `api_base` / `model` / `api_format`，先从运行中的插件实例读，读不到再找它的配置文件），不用另填。画风写在 `image_style`（英文），超时 `image_timeout`。画图任何一步失败都自动降级为纯文字，不会因此漏发。`image_probability` 默认 0，不开不画。
+
 ## 与 gpt_image 的配合（想用「配模型画的图」才需要）
 
 「配模型自己画的图」这条来源，依赖配套的 gpt_image fork：[monieckbo-svg/astrbot_plugin_gpt_image](https://github.com/monieckbo-svg/astrbot_plugin_gpt_image)。它在 `last_image_url` 里记录每次画图的链接和**时间戳**，qzone 按 `session_id` 对齐取用、按时间戳参与「最新优先」比较。
