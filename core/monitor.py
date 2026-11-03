@@ -1142,11 +1142,10 @@ class QzoneMonitor:
                 "If it is about something else, a scene without people is fine.\n"
                 f"Characters: {chars}\n"
             )
-        if style:
-            ask += f"Art style (keep these style words in the prompt): {style}\n"
         ask += (
-            "No text, letters or watermarks in the image. "
-            "Output ONLY the English prompt, no explanation. At most 5 sentences."
+            "Describe ONLY the subject, scene, composition, poses and mood. "
+            "Do NOT mention any art style or medium; the style is appended separately. "
+            "Output ONLY the English description, no explanation. At most 5 sentences."
         )
         if style:
             logger.info(f"[AstraQzone] 本次配图画风: {style[:60]}")
@@ -1155,7 +1154,11 @@ class QzoneMonitor:
         if not image_prompt or len(image_prompt) < 10 or self._should_skip(image_prompt):
             logger.info(f"[AstraQzone] 画图 prompt 生成失败，跳过配图（{image_prompt!r}）")
             return None
-        logger.info(f"[AstraQzone] 画图 prompt: {image_prompt[:120]}")
+        # 画风原文一字不改拼在最后，不交给模型转述，防止被缩写走样
+        if style:
+            image_prompt = f"{image_prompt}\n\nArt style: {style}"
+        image_prompt += "\nNo text, letters or watermarks in the image."
+        logger.info(f"[AstraQzone] 画图 prompt: {image_prompt[:200]}")
 
         try:
             providers = await self._gpt_image_providers(inst)
