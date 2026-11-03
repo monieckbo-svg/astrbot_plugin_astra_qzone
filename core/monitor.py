@@ -1126,14 +1126,30 @@ class QzoneMonitor:
         if not inst:
             return None
 
-        style = (self.config.get("image_style") or "").strip()
+        # 画风可填多个，用 | 隔开，每次随机抽一个
+        styles = [x.strip() for x in (self.config.get("image_style") or "").split("|") if x.strip()]
+        style = random.choice(styles) if styles else ""
+        chars = (self.config.get("image_characters") or "").strip()
         ask = (
-            "Based on this social media post, write a short English image generation prompt.\n"
+            "Based on this social media post, write an English image generation prompt.\n"
             f"Post: '{post_content}'\n"
-            + (f"Style: {style}\n" if style else "")
-            + "No text, letters or watermarks in the image. "
-            "Output ONLY the English prompt, no explanation. 1-2 sentences max."
         )
+        if chars:
+            ask += (
+                "The post was written in first person by the man described below; "
+                "'她/宝宝/小猫' etc. refer to the woman. If the post is about him, her, or the two of them, "
+                "draw them and copy their appearance details exactly as described. "
+                "If it is about something else, a scene without people is fine.\n"
+                f"Characters: {chars}\n"
+            )
+        if style:
+            ask += f"Art style (keep these style words in the prompt): {style}\n"
+        ask += (
+            "No text, letters or watermarks in the image. "
+            "Output ONLY the English prompt, no explanation. At most 5 sentences."
+        )
+        if style:
+            logger.info(f"[AstraQzone] 本次配图画风: {style[:60]}")
         # 不带说说人格：人格是中文自言自语，会把英文 prompt 写歪
         image_prompt = await self._llm(ask, "_image_prompt_persona")
         if not image_prompt or len(image_prompt) < 10 or self._should_skip(image_prompt):
