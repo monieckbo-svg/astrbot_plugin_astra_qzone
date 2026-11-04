@@ -24,6 +24,31 @@ from .qzone.api import QzoneAPI
 from .qzone.session import QzoneSession
 
 
+# 正文里夹带的思考链（不走原生 thinking 的 API 会把思考写进正文）
+# 格式表与 thinking_folder 插件一致
+_THINK_RE = re.compile(
+    r"<(think|thinking|thought|thoughts|reasoning)>.*?</\1>"
+    r"|\[-\s*thought\b.*?-\]"
+    r"|```(?:think|thinking|thought)\s*\n.*?```",
+    re.DOTALL | re.IGNORECASE,
+)
+_THINK_OPEN_RE = re.compile(
+    r"<(think|thinking|thought|thoughts|reasoning)>|\[-\s*thought\b|```(?:think|thinking|thought)\s*\n",
+    re.IGNORECASE,
+)
+_THINK_CLOSE_ONLY_RE = re.compile(r"^.*</(think|thinking|thought|thoughts|reasoning)>", re.DOTALL | re.IGNORECASE)
+
+
+def strip_thinking(text: str):
+    """剪掉正文里的思考链，返回干净正文；剪完仍有没闭合的开头标签则返回 None（整条作废）。"""
+    t = _THINK_RE.sub("", text or "")
+    # 只吐了结尾标签：结尾标签之前的都当思考
+    t = _THINK_CLOSE_ONLY_RE.sub("", t)
+    if _THINK_OPEN_RE.search(t):
+        return None
+    return t.strip()
+
+
 # 钱数：¥99 / 99元 / 两百块 / 3.5k / 1w …
 _MONEY_RE = re.compile(
     r"[¥￥$]\s*\d|"
@@ -145,7 +170,10 @@ class QzoneMonitor:
                 image_urls=image_urls or [],
             )
             if resp and resp.role == "assistant" and resp.completion_text:
-                text = resp.completion_text.strip()
+                text = strip_thinking(resp.completion_text)
+                if text is None:
+                    logger.warning("[AstraQzone] 回复里思考链没闭合，丢弃这条，防止半截思考发出去")
+                    return None
                 # 换行/连续空白折叠成单个空格（不再全删——全删会把
                 # 模型用空格断句的回复粘成无标点连体字），尾句号照掐保持随手感
                 text = re.sub(r"[\s\u3000]+", " ", text).strip().rstrip("。")
