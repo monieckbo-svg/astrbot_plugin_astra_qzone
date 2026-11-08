@@ -1234,7 +1234,8 @@ class QzoneMonitor:
         if chars:
             ask += (
                 "The post was written in first person by the man described below; "
-                "'她/宝宝/乖' refer to the woman. Any pet or animal mentioned in the post (by name or otherwise) "
+                "'她/宝宝/小猫/乖' refer to the woman ('小猫' is his pet name for her, not an animal). "
+                "Any OTHER pet or animal mentioned in the post, especially one called by its own name (e.g. a named cat), "
                 "is a REAL animal: draw it as an actual animal, never as the woman or as a person with animal ears. "
                 "If a named pet is described in Characters, copy that description. "
                 "Draw a person only if the post is actually about that person or what they did; "
