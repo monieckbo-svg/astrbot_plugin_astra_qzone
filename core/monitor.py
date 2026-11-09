@@ -167,9 +167,8 @@ class QzoneMonitor:
                 return None
             timeout = int(self.config.get("llm_timeout", 180) or 180)
             try:
-                resp = await asyncio.wait_for(provider.text_chat(
-                    prompt=prompt, contexts=[], system_prompt=sys_prompt,
-                    image_urls=image_urls or [],
+                resp = await asyncio.wait_for(self._call_provider(
+                    provider, prompt, sys_prompt, image_urls or [],
                 ), timeout=timeout)
             except asyncio.TimeoutError:
                 logger.error(f"[AstraQzone] LLM失败: {timeout}秒没回音（提供商 {pname}）")
@@ -186,6 +185,35 @@ class QzoneMonitor:
         except Exception as e:
             logger.error(f"[AstraQzone] LLM失败: {e}")
         return None
+
+    async def _call_provider(self, provider, prompt: str, sys_prompt: str, image_urls: list):
+        """默认走流式（跟聊天一样）：有的中转站对非流式请求一直不回话，聊天正常空间却超时。
+        流式拿不到结果再退回普通请求。"""
+        if self.config.get("llm_stream", True) and hasattr(provider, "text_chat_stream"):
+            parts, final = [], None
+            try:
+                async for r in provider.text_chat_stream(
+                    prompt=prompt, contexts=[], system_prompt=sys_prompt,
+                    image_urls=image_urls,
+                ):
+                    if getattr(r, "is_chunk", False):
+                        if r.completion_text:
+                            parts.append(r.completion_text)
+                    else:
+                        final = r
+                if final is not None and final.completion_text:
+                    return final
+                if parts:
+                    from astrbot.core.provider.entities import LLMResponse
+                    return LLMResponse("assistant", completion_text="".join(parts))
+                logger.warning("[AstraQzone] 流式请求没拿到正文，改用普通请求")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.warning(f"[AstraQzone] 流式请求失败({e!r})，改用普通请求")
+        return await provider.text_chat(
+            prompt=prompt, contexts=[], system_prompt=sys_prompt, image_urls=image_urls,
+        )
 
     async def _pick_provider(self):
         """选模型：插件配置里指定的 > 她QQ私聊会话正在用的（跟星星聊天同一个）> AstrBot默认。"""

@@ -30,6 +30,11 @@
     "type": "int",
     "default": 180
   },
+  "llm_stream": {
+    "description": "写说说/评论时用流式请求（跟聊天一样）。有的中转站非流式请求不回话，保持开着",
+    "type": "bool",
+    "default": true
+  },
   "context_probability": {
     "description": "自动发说说时结合聊天记录的概率（0.0-1.0）。其余的说说不看对话，写他自己",
     "type": "float",
