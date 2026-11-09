@@ -1231,7 +1231,18 @@ class QzoneMonitor:
             "Based on this social media post, write an English image generation prompt.\n"
             f"Post: '{post_content}'\n"
         )
-        if chars:
+        scene_p = float(self.config.get("image_scene_probability", 0.3) or 0.0)
+        if random.random() < scene_p:
+            # 这张只画景或物：不画任何人，用场景、物件、细节把说说的意思带出来
+            logger.info("[AstraQzone] 这张配图只画景/物，不画人")
+            ask += (
+                "This time draw NO people at all, not even partially. "
+                "Instead depict a landscape, a scene, or a still life of objects that captures the post's moment "
+                "and mood, like the thing mentioned in the post, the view, small everyday details. "
+                "Signs of the people may appear only through objects (e.g. a pair of silver wire-frame glasses, "
+                "a grey vest, a cup), never as figures.\n"
+            )
+        elif chars:
             ask += (
                 "The post was written in first person by the man described below; "
                 "'她/宝宝/小猫' etc. refer to the woman. If the post is about him, her, or the two of them, "

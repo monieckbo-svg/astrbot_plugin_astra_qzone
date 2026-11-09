@@ -154,6 +154,11 @@
     "type": "text",
     "default": ""
   },
+  "image_scene_probability": {
+    "description": "配图只画景或物、不画人的概率（0.0-1.0）。0=照常按说说内容决定画不画人",
+    "type": "float",
+    "default": 0.3
+  },
   "image_send_to_user": {
     "description": "自动发的带图说说，是否把原图（未压缩）私聊发给监控用户一份",
     "type": "bool",
