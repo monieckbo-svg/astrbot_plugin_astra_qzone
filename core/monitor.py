@@ -1082,7 +1082,16 @@ class QzoneMonitor:
 
     # ─── 自动发说说 ───
 
+    async def _safe_post(self):
+        """自动发说说出任何异常都只记日志，不能让整个自动发说说循环悄悄死掉。"""
+        try:
+            res = await self._do_post()
+            logger.info(f"[AstraQzone] 自动发说说结果: {res}")
+        except Exception as e:
+            logger.error(f"[AstraQzone] 自动发说说异常（循环继续）: {e!r}", exc_info=True)
+
     async def _auto_post_loop(self):
+        logger.info("[AstraQzone] 自动发说说循环启动")
         while self.running:
             now = datetime.now(BEIJING)
             start_h = self.config.get("active_hours_start", 8)
@@ -1104,7 +1113,7 @@ class QzoneMonitor:
                         self._conv_post_done = True
                         triggered = True
                         logger.info("[AstraQzone] 对话冷却触发，考虑发说说")
-                        await self._do_post()
+                        await self._safe_post()
 
                     # ── 线2：定时兜底 ──
                     if not triggered:
@@ -1112,7 +1121,7 @@ class QzoneMonitor:
                         max_h = self.config.get("auto_post_max_hours", 16)
                         if hours_since_post >= random.uniform(min_h, max_h):
                             logger.info("[AstraQzone] 定时兜底触发，考虑发说说")
-                            await self._do_post()
+                            await self._safe_post()
 
             await asyncio.sleep(120)
 
