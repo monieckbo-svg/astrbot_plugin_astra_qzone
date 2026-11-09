@@ -161,14 +161,19 @@ class QzoneMonitor:
         """调用LLM生成回复。成功返回文本，失败返回None（不再fallback兜底词）。"""
         sys_prompt = self.config.get(persona_key, "")
         try:
-            provider = self.context.get_using_provider()
-            if not provider or not isinstance(provider, Provider):
+            provider, pname = await self._pick_provider()
+            if not provider:
                 logger.warning("[AstraQzone] LLM provider不可用")
                 return None
-            resp = await provider.text_chat(
-                prompt=prompt, contexts=[], system_prompt=sys_prompt,
-                image_urls=image_urls or [],
-            )
+            timeout = int(self.config.get("llm_timeout", 180) or 180)
+            try:
+                resp = await asyncio.wait_for(provider.text_chat(
+                    prompt=prompt, contexts=[], system_prompt=sys_prompt,
+                    image_urls=image_urls or [],
+                ), timeout=timeout)
+            except asyncio.TimeoutError:
+                logger.error(f"[AstraQzone] LLM失败: {timeout}秒没回音（提供商 {pname}）")
+                return None
             if resp and resp.role == "assistant" and resp.completion_text:
                 text = strip_thinking(resp.completion_text)
                 if text is None:
@@ -181,6 +186,28 @@ class QzoneMonitor:
         except Exception as e:
             logger.error(f"[AstraQzone] LLM失败: {e}")
         return None
+
+    async def _pick_provider(self):
+        """选模型：插件配置里指定的 > 她QQ私聊会话正在用的（跟星星聊天同一个）> AstrBot默认。"""
+        pid = (self.config.get("llm_provider_id") or "").strip()
+        if pid:
+            try:
+                prov = await self.context.provider_manager.get_provider_by_id(pid)
+                if isinstance(prov, Provider):
+                    return prov, pid
+                logger.warning(f"[AstraQzone] 配置的提供商 [{pid}] 找不到，退回聊天用的")
+            except Exception as e:
+                logger.warning(f"[AstraQzone] 取提供商 [{pid}] 失败: {e}")
+        umo = self._her_private_umo()
+        if umo:
+            try:
+                prov = self.context.get_using_provider(umo=umo)
+                if isinstance(prov, Provider):
+                    return prov, "私聊会话在用的"
+            except Exception:
+                pass
+        prov = self.context.get_using_provider()
+        return (prov, "默认") if isinstance(prov, Provider) else (None, "")
 
     def on_message(self):
         """main.py 每收到消息时调用，记录活动时间"""

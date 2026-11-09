@@ -19,6 +19,17 @@
     "type": "string",
     "default": ""
   },
+  "llm_provider_id": {
+    "description": "写说说/评论用的模型（留空=跟你和他QQ私聊用同一个；再找不到才用AstrBot默认）",
+    "type": "string",
+    "_special": "select_provider",
+    "default": ""
+  },
+  "llm_timeout": {
+    "description": "写说说/评论时等模型的最长秒数，超时这一轮就放弃",
+    "type": "int",
+    "default": 180
+  },
   "context_probability": {
     "description": "自动发说说时结合聊天记录的概率（0.0-1.0）。其余的说说不看对话，写他自己",
     "type": "float",
