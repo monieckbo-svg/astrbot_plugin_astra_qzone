@@ -1232,16 +1232,23 @@ class QzoneMonitor:
             f"Post: '{post_content}'\n"
         )
         scene_p = float(self.config.get("image_scene_probability", 0.3) or 0.0)
-        if random.random() < scene_p:
-            # 这张只画景或物：不画任何人，用场景、物件、细节把说说的意思带出来
-            logger.info("[AstraQzone] 这张配图只画景/物，不画人")
+        # 写到她、写"我们/一起"的说说，人就是重点，不进只画景的模式
+        about_her = re.search(r"她|宝宝|小猫|乖|我们|咱们|一起|陪", post_content or "")
+        scene_mode = (not about_her) and random.random() < scene_p
+        if scene_mode:
+            # 这张优先只画景或物；但说说的意思离了人就画不出来时，模型可以照常画人
+            logger.info("[AstraQzone] 这张配图优先只画景/物")
             ask += (
-                "This time draw NO people at all, not even partially. "
-                "Instead depict a landscape, a scene, or a still life of objects that captures the post's moment "
-                "and mood, like the thing mentioned in the post, the view, small everyday details. "
-                "Signs of the people may appear only through objects (e.g. a pair of silver wire-frame glasses, "
-                "a grey vest, a cup), never as figures.\n"
+                "This time, PREFER drawing no people: depict a landscape, a scene, or a still life of objects "
+                "that captures the post's moment and mood, like the thing mentioned in the post, the view, "
+                "small everyday details. Signs of him may appear only through objects (e.g. a pair of silver "
+                "wire-frame glasses, a grey vest, a cup). "
+                "Exception: if the post's point truly cannot be shown without a person (e.g. it is about how "
+                "someone looks or something a person is doing that objects cannot convey), draw the person as "
+                "described below instead.\n"
             )
+            if chars:
+                ask += f"Characters (only if you must draw a person): {chars}\n"
         elif chars:
             ask += (
                 "The post was written in first person by the man described below; "
