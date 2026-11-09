@@ -161,18 +161,14 @@ class QzoneMonitor:
         """调用LLM生成回复。成功返回文本，失败返回None（不再fallback兜底词）。"""
         sys_prompt = self.config.get(persona_key, "")
         try:
-            provider, pname = await self._pick_provider()
-            if not provider:
+            provider = self.context.get_using_provider()
+            if not provider or not isinstance(provider, Provider):
                 logger.warning("[AstraQzone] LLM provider不可用")
                 return None
-            timeout = int(self.config.get("llm_timeout", 180) or 180)
-            try:
-                resp = await asyncio.wait_for(self._call_provider(
-                    provider, prompt, sys_prompt, image_urls or [],
-                ), timeout=timeout)
-            except asyncio.TimeoutError:
-                logger.error(f"[AstraQzone] LLM失败: {timeout}秒没回音（提供商 {pname}）")
-                return None
+            resp = await provider.text_chat(
+                prompt=prompt, contexts=[], system_prompt=sys_prompt,
+                image_urls=image_urls or [],
+            )
             if resp and resp.role == "assistant" and resp.completion_text:
                 text = strip_thinking(resp.completion_text)
                 if text is None:
@@ -185,57 +181,6 @@ class QzoneMonitor:
         except Exception as e:
             logger.error(f"[AstraQzone] LLM失败: {e}")
         return None
-
-    async def _call_provider(self, provider, prompt: str, sys_prompt: str, image_urls: list):
-        """默认走流式（跟聊天一样）：有的中转站对非流式请求一直不回话，聊天正常空间却超时。
-        流式拿不到结果再退回普通请求。"""
-        if self.config.get("llm_stream", True) and hasattr(provider, "text_chat_stream"):
-            parts, final = [], None
-            try:
-                async for r in provider.text_chat_stream(
-                    prompt=prompt, contexts=[], system_prompt=sys_prompt,
-                    image_urls=image_urls,
-                ):
-                    if getattr(r, "is_chunk", False):
-                        if r.completion_text:
-                            parts.append(r.completion_text)
-                    else:
-                        final = r
-                if final is not None and final.completion_text:
-                    return final
-                if parts:
-                    from astrbot.core.provider.entities import LLMResponse
-                    return LLMResponse("assistant", completion_text="".join(parts))
-                logger.warning("[AstraQzone] 流式请求没拿到正文，改用普通请求")
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:
-                logger.warning(f"[AstraQzone] 流式请求失败({e!r})，改用普通请求")
-        return await provider.text_chat(
-            prompt=prompt, contexts=[], system_prompt=sys_prompt, image_urls=image_urls,
-        )
-
-    async def _pick_provider(self):
-        """选模型：插件配置里指定的 > 她QQ私聊会话正在用的（跟星星聊天同一个）> AstrBot默认。"""
-        pid = (self.config.get("llm_provider_id") or "").strip()
-        if pid:
-            try:
-                prov = await self.context.provider_manager.get_provider_by_id(pid)
-                if isinstance(prov, Provider):
-                    return prov, pid
-                logger.warning(f"[AstraQzone] 配置的提供商 [{pid}] 找不到，退回聊天用的")
-            except Exception as e:
-                logger.warning(f"[AstraQzone] 取提供商 [{pid}] 失败: {e}")
-        umo = self._her_private_umo()
-        if umo:
-            try:
-                prov = self.context.get_using_provider(umo=umo)
-                if isinstance(prov, Provider):
-                    return prov, "私聊会话在用的"
-            except Exception:
-                pass
-        prov = self.context.get_using_provider()
-        return (prov, "默认") if isinstance(prov, Provider) else (None, "")
 
     def on_message(self):
         """main.py 每收到消息时调用，记录活动时间"""
@@ -1137,16 +1082,7 @@ class QzoneMonitor:
 
     # ─── 自动发说说 ───
 
-    async def _safe_post(self):
-        """自动发说说出任何异常都只记日志，不能让整个自动发说说循环悄悄死掉。"""
-        try:
-            res = await self._do_post()
-            logger.info(f"[AstraQzone] 自动发说说结果: {res}")
-        except Exception as e:
-            logger.error(f"[AstraQzone] 自动发说说异常（循环继续）: {e!r}", exc_info=True)
-
     async def _auto_post_loop(self):
-        logger.info("[AstraQzone] 自动发说说循环启动")
         while self.running:
             now = datetime.now(BEIJING)
             start_h = self.config.get("active_hours_start", 8)
@@ -1168,7 +1104,7 @@ class QzoneMonitor:
                         self._conv_post_done = True
                         triggered = True
                         logger.info("[AstraQzone] 对话冷却触发，考虑发说说")
-                        await self._safe_post()
+                        await self._do_post()
 
                     # ── 线2：定时兜底 ──
                     if not triggered:
@@ -1176,7 +1112,7 @@ class QzoneMonitor:
                         max_h = self.config.get("auto_post_max_hours", 16)
                         if hours_since_post >= random.uniform(min_h, max_h):
                             logger.info("[AstraQzone] 定时兜底触发，考虑发说说")
-                            await self._safe_post()
+                            await self._do_post()
 
             await asyncio.sleep(120)
 
@@ -1298,12 +1234,8 @@ class QzoneMonitor:
         if chars:
             ask += (
                 "The post was written in first person by the man described below; "
-                "'她/宝宝/小猫/乖' refer to the woman ('小猫' is his pet name for her, not an animal). "
-                "Any OTHER pet or animal mentioned in the post, especially one called by its own name (e.g. a named cat), "
-                "is a REAL animal: draw it as an actual animal, never as the woman or as a person with animal ears. "
-                "If a named pet is described in Characters, copy that description. "
-                "Draw a person only if the post is actually about that person or what they did; "
-                "if the post is about him, her, or the two of them, copy their appearance details exactly as described. "
+                "'她/宝宝/小猫' etc. refer to the woman. If the post is about him, her, or the two of them, "
+                "draw them and copy their appearance details exactly as described. "
                 "If it is about something else, a scene without people is fine.\n"
                 f"Characters: {chars}\n"
             )

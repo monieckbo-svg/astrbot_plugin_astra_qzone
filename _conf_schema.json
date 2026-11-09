@@ -19,22 +19,6 @@
     "type": "string",
     "default": ""
   },
-  "llm_provider_id": {
-    "description": "写说说/评论用的模型（留空=跟你和他QQ私聊用同一个；再找不到才用AstrBot默认）",
-    "type": "string",
-    "_special": "select_provider",
-    "default": ""
-  },
-  "llm_timeout": {
-    "description": "写说说/评论时等模型的最长秒数，超时这一轮就放弃",
-    "type": "int",
-    "default": 180
-  },
-  "llm_stream": {
-    "description": "写说说/评论时用流式请求（跟聊天一样）。有的中转站非流式请求不回话，保持开着",
-    "type": "bool",
-    "default": true
-  },
   "context_probability": {
     "description": "自动发说说时结合聊天记录的概率（0.0-1.0）。其余的说说不看对话，写他自己",
     "type": "float",
@@ -166,7 +150,7 @@
     "default": ""
   },
   "image_characters": {
-    "description": "配图里人物和宠物的外貌（英文）。写清楚他和你各自的发色、眼睛、耳朵尾巴、衣着、身高等，家里宠物也写上名字和样子（会画成真的动物）；说说写到谁就照着画谁，写别的就画景。留空则不画人物设定。",
+    "description": "配图里人物的外貌（英文）。写清楚他和你各自的发色、眼睛、耳朵尾巴、衣着、身高等；说说写到你们时会照着画，写别的就画景。留空则不画人物设定。",
     "type": "text",
     "default": ""
   },
