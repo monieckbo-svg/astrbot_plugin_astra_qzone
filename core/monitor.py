@@ -1088,7 +1088,12 @@ class QzoneMonitor:
             start_h = self.config.get("active_hours_start", 8)
             end_h = self.config.get("active_hours_end", 23)
 
-            if start_h <= now.hour < end_h:
+            # 支持跨午夜：比如 9 到 2 表示早上9点到第二天凌晨2点
+            if start_h <= end_h:
+                in_active = start_h <= now.hour < end_h
+            else:
+                in_active = now.hour >= start_h or now.hour < end_h
+            if in_active:
                 last_post = self._state.get("last_post_time", 0)
                 hours_since_post = (time.time() - last_post) / 3600
                 min_gap = self.config.get("post_min_gap_hours", 3)

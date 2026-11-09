@@ -105,12 +105,12 @@
     "default": 30
   },
   "active_hours_start": {
-    "description": "活跃时段开始（24小时制）",
+    "description": "活跃时段开始（24小时制，0-23）",
     "type": "int",
     "default": 8
   },
   "active_hours_end": {
-    "description": "活跃时段结束（24小时制）",
+    "description": "活跃时段结束（24小时制，0-24）。可以比开始小表示跨到第二天凌晨，比如开始9、结束2 = 早9点到凌晨2点",
     "type": "int",
     "default": 23
   },
